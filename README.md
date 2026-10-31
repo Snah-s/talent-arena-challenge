@@ -42,7 +42,7 @@ switches, and the ball itself is invisible on 41% of the frames you are scored o
 | **Ranked on** | `spellF1` — how many of the match's real possessions you recovered as whole possessions                                   |
 | **Also reported** | `macroF1` — the per-frame view, and the first tie-break                                                                   |
 | **Baseline to beat** | `spellF1` **0.2433**, in this repository                                                                                  |
-| **Ground truth you get** | the first **5 minutes** of play                                                                                           |
+| **Ground truth you get** | the first **5 minutes** of play — to check your pipeline, not to train on                                              |
 | **Ground truth you are scored on** | the full match, **private**                                                                                               |
 
 It is deliberately **not** a tracking challenge. The tracking, tagging and homography are given to
@@ -187,9 +187,8 @@ competition only, under the terms you accept at enrolment.
 ```bibtex
 @misc{mtah2027,
   title  = {More than a Hack 2027: Phase 1 - Ball Possession},
-  author = {<TBD>},
+  author = {Metrica Sports and FC Barcelona Innovation Hub},
   year   = {2027},
-  note   = {Metrica Sports and FC Barcelona Innovation Hub},
   url    = {https://github.com/metrica-sports/more-than-a-hack-2027}
 }
 ```

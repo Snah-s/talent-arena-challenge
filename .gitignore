@@ -64,3 +64,6 @@ env/
 .DS_Store
 docs/
 .codegraph/
+
+# -- external bench data (DFL, CC BY 4.0) and derived caches ---------------------------------
+external/

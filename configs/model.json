@@ -1,0 +1,10 @@
+{
+  "alpha": 0.75,
+  "min_live": 75,
+  "min_dead": 100,
+  "tags": "pseudo",
+  "train_control_s": 2.0,
+  "stride": 5,
+  "bench_spell_f1": 0.6049,
+  "bench_baseline_spell_f1": 0.1819
+}

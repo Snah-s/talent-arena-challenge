@@ -32,6 +32,12 @@ def _brute(logE, mins, logT, logStay):
                for p in itertools.product(range(4), repeat=len(logE)))
 
 
+def _rules(arrays):
+    _, self_cost, _, _, entry, last, exit_cost, log_dest = arrays
+    mins = np.array([last[s] - entry[s] + 1 for s in range(4)])
+    return mins, exit_cost[:, None] + log_dest, self_cost[last]
+
+
 def test_viterbi_matches_enumeration():
     """k = 1 (minimum + geometric tail) against enumeration of the run-length rules."""
     rng = np.random.default_rng(0)
@@ -40,12 +46,34 @@ def test_viterbi_matches_enumeration():
         logE = rng.normal(0, 1.5, (7, 4))
         cfg = {"min_live": 1 + trial % 3, "min_dead": 1 + (trial // 2) % 3}
         arrays = P.chain(stats, cfg)
-        _, self_cost, _, _, entry, last, exit_cost, log_dest = arrays
-        mins = np.array([last[s] - entry[s] + 1 for s in range(4)])
-        logStay = self_cost[last]
-        logT = exit_cost[:, None] + log_dest
+        mins, logT, logStay = _rules(arrays)
         path = P.viterbi(logE, *arrays)
         assert np.isclose(_score(path, logE, mins, logT, logStay), _brute(logE, mins, logT, logStay))
+
+
+def test_sampled_paths_follow_the_exact_posterior():
+    """FFBS draws against the posterior from enumerating every path under the same rules."""
+    rng = np.random.default_rng(4)
+    stats = _stats(rng)
+    logE = rng.normal(0, 1.0, (5, 4))
+    logE[2, :2] = -np.inf  # a forced-dead frame, as decode() makes them
+    arrays = P.chain(stats, {"min_live": 2, "min_dead": 2})
+    mins, logT, logStay = _rules(arrays)
+    paths = list(itertools.product(range(4), repeat=5))
+    w = np.exp([_score(p, logE, mins, logT, logStay) for p in paths])
+    exact = np.einsum("p,pts->ts", w / w.sum(), np.eye(4)[np.array(paths)])
+    draws = P.sample_paths(logE, *arrays, 20000, 0)
+    freq = np.stack([(draws == s).mean(0) for s in range(4)], 1)
+    np.testing.assert_allclose(freq, exact, atol=0.015)
+    assert P.sample_paths(logE, *arrays, 50, 7).tolist() == P.sample_paths(logE, *arrays, 50, 7).tolist()
+
+
+def test_mbr_prefers_the_consensus_and_keeps_viterbi_on_ties():
+    H, A = 0, 1
+    vit = np.array([H] * 40 + [A] * 40, np.int8)
+    odd = np.array([H] * 80, np.int8)
+    assert P.mbr(vit, np.stack([odd] + [vit] * 4), n_cand=1) is vit
+    assert P.mbr(vit, np.stack([odd] * 5), n_cand=1) is not vit
 
 
 def _stats(rng):
@@ -125,3 +153,12 @@ def test_pitch_control_favours_the_team_at_the_point():
     assert np.isclose(pc_far[0], -pc[0], atol=1e-6)                  # mirror case
     assert np.isnan(F.pitch_control(P, vp, home, np.array([[np.nan, np.nan]]))[0][0])
 
+
+
+def test_blend_owner_keeps_team_symmetry_and_endpoints():
+    rng = np.random.default_rng(0)
+    r, r_nn = rng.uniform(0.01, 0.99, 50), rng.uniform(0.01, 0.99, 50)
+    np.testing.assert_allclose(P.blend_owner(r, r_nn, 0.0), r, atol=1e-9)
+    np.testing.assert_allclose(P.blend_owner(r, r_nn, 1.0), r_nn, atol=1e-9)
+    np.testing.assert_allclose(P.blend_owner(1 - r, 1 - r_nn, 0.75), 1 - P.blend_owner(r, r_nn, 0.75),
+                               atol=1e-9)

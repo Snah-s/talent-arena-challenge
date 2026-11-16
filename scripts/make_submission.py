@@ -3,7 +3,10 @@
     python scripts/make_submission.py --team <team_name>
 
 Trains on the external DFL bench only (configs/model.json holds the parameters chosen there by
-scripts/bench_eval.py), then runs the trained model on the challenge ATD. Prints aggregates only.
+scripts/bench_eval.py), then runs the trained model on the challenge ATD. The neural owner head
+(models/owner_nn_s*.pt, trained on the same DFL bench by src/owner_nn.py; blend weight chosen by
+scripts/nn_eval.py) is blended into the HGB owner head when configs/model.json has "owner_nn".
+Prints aggregates only.
 """
 
 import argparse
@@ -29,6 +32,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--team", default="submission", help="names the CSV, as SUBMISSION.md asks")
     parser.add_argument("--out", default=os.path.join(ROOT, "evaluation", "results"))
+    parser.add_argument("--ball-fill", help="ball_vision.npz from scripts/vision_fuse.py: fills "
+                        "the ATD's ball gaps with video detections (never overwrites the ATD)")
     args = parser.parse_args()
 
     with open(os.path.join(ROOT, "configs", "model.json")) as handle:
@@ -37,12 +42,25 @@ def main():
     heads, stats = P.train(bench.match_ids(), cfg["train_control_s"], cfg["stride"], tag_mode)
 
     m = load_atd()
+    if args.ball_fill:
+        with np.load(args.ball_fill) as z:
+            vb, filled = z["ball"], z["filled"]
+        assert not np.isfinite(m["ball"][filled, 0]).any(), "the fill must only touch ATD gaps"
+        m["ball"][filled, :2] = vb[filled]
+        print("ball fill: {} frames from video".format(int(filled.sum())))
     sym, anti = F.features(m)
     tags, kickoffs = tagging.challenge_tags(team_names(require(["atd_meta"])[0])[0])
     if tag_mode != "none":
         ts, ta = tagging.tag_features(tags, len(sym))
         sym, anti = np.hstack([sym, ts]), np.hstack([anti, ta])
     q, r = P.predict_heads(heads, sym, anti)
+    nn_cfg = cfg.get("owner_nn")
+    if nn_cfg:
+        from src import owner_nn  # torch is only needed here
+        r = P.blend_owner(r, owner_nn.infer(m, [os.path.join(ROOT, p) for p in nn_cfg["models"]]),
+                          nn_cfg["weight"])
+        print("owner head: HGB + neural ({} seeds, weight {})".format(len(nn_cfg["models"]),
+                                                                     nn_cfg["weight"]))
 
     # Law 8: the ball is not in play before a half's kick-off. Smart Tagging marks the window
     # around each 'Kick Off (Start)'; everything in that half before the window starts is dead.

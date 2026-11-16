@@ -5,6 +5,15 @@
   "tags": "pseudo",
   "train_control_s": 2.0,
   "stride": 5,
-  "bench_spell_f1": 0.6049,
-  "bench_baseline_spell_f1": 0.1819
+  "bench_spell_f1": 0.6553,
+  "bench_baseline_spell_f1": 0.1819,
+  "owner_nn": {
+    "weight": 0.75,
+    "models": [
+      "models/owner_nn_s0.pt",
+      "models/owner_nn_s1.pt",
+      "models/owner_nn_s2.pt"
+    ]
+  },
+  "bench_spell_f1_v6": 0.6049
 }

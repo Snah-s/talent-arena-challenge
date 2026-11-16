@@ -2,6 +2,7 @@
 
     python scripts/diagnose_bench.py ceiling   # perfect ball (no gaps, no phantoms): vision's ceiling
     python scripts/diagnose_bench.py oracle    # one head replaced by the truth at a time
+    python scripts/diagnose_bench.py cuts      # which true boundaries the decoder merges (OOF cache)
 
 Same leave-one-match-out folds, pseudo-tags and scoring as scripts/bench_eval.py. Not used to
 choose anything for the submission; it only says which lever has room.
@@ -46,9 +47,79 @@ def train_on(inputs, mids, labels, periods, stride):
     return heads, P.transition_stats([labels[mid] for mid in mids], [periods[mid] for mid in mids])
 
 
+CUT_KINDS = ("H<->A direct", "D, same team", "D, other team")
+GAP_BINS = ("<=2 s", "2-5 s", ">5 s")
+
+
+def boundary_kind(a1, b0, k0, k1):
+    """(kind, gap bin) of the boundary between true spells ending at b0 and starting at a1."""
+    gap = (a1 - b0) / 25.0
+    return (0 if a1 == b0 else 1 if k0 == k1 else 2), (0 if gap <= 2 else 1 if gap <= 5 else 2)
+
+
+def merged_across(cov0, cov1, len0, len1):
+    """True when one predicted spell covers at least half of both neighbouring true spells."""
+    return bool(np.any((cov0 >= 0.5 * len0) & (cov1 >= 0.5 * len1)))
+
+
+def cuts(cfg):
+    """E0: classify the true possession boundaries the decoder does not cut, at N = 2 s."""
+    from scripts.spell_eval import oof
+    pm = bench.pm
+    mids = bench.match_ids()
+    out = oof(mids, cfg)
+    tot, miss = np.zeros((3, 3)), np.zeros((3, 3))
+    counts = np.zeros(5)  # n_gt, n_pred, unmatched@0.5, of which merged, of which fragmented
+    n_runs = 0
+    for mid in mids:
+        m = bench.load_match(mid)
+        cut = int(np.argmax(m["period"] == 2))
+        gt = np.insert(bench.controlled_labels(m["label"], m["period"], 2.0).astype(np.int8), cut, bench.X)
+        runs = pm.valid_runs(gt)
+        gs = pm.possession_spells(gt, runs)
+        for _, _, pred in out[mid]:
+            n_runs += 1
+            pr = pm.fill_abstentions(np.insert(pred.astype(np.int8), cut, bench.X), runs)
+            ps = pm.possession_spells(pr, runs)
+            pa, pb = np.array([s[0] for s in ps]), np.array([s[1] for s in ps])
+            covs = [np.clip(np.minimum(pb, b) - np.maximum(pa, a), 0, None) for a, b, _ in gs]
+            merged = np.zeros(len(gs), bool)
+            for i in range(len(gs) - 1):
+                (a0, b0, k0), (a1, b1, k1) = gs[i], gs[i + 1]
+                if np.any(gt[b0:a1] == bench.X):  # halftime
+                    continue
+                kind, gbin = boundary_kind(a1, b0, k0, k1)
+                hit = merged_across(covs[i], covs[i + 1], b0 - a0, b1 - a1)
+                tot[kind, gbin] += 1
+                miss[kind, gbin] += hit
+                merged[i] |= hit
+                merged[i + 1] |= hit
+            unmatched = ~pm.matched_gt_flags(pm.spell_overlaps(gs, ps), len(gs), 0.5)
+            frag = np.array([(c >= 25).sum() >= 2 for c in covs])
+            counts += [len(gs), len(ps), unmatched.sum(), (unmatched & merged).sum(),
+                       (unmatched & ~merged & frag).sum()]
+
+    tot, miss, counts = tot / n_runs, miss / n_runs, counts / n_runs
+    print("per match-copy (n = {}), labels N = 2 s".format(n_runs))
+    print("\n{:<15} {:<7} {:>8} {:>8} {:>6} {:>12}".format("boundary", "D gap", "true", "merged", "rate", "share merged"))
+    for k, name in enumerate(CUT_KINDS):
+        for g, gname in enumerate(GAP_BINS):
+            if tot[k, g] == 0:
+                continue
+            print("{:<15} {:<7} {:>8.1f} {:>8.1f} {:>6.2f} {:>12.2f}".format(
+                name, gname if k else "-", tot[k, g], miss[k, g], miss[k, g] / tot[k, g], miss[k, g] / miss.sum()))
+    print("{:<15} {:<7} {:>8.1f} {:>8.1f} {:>6.2f}".format("all", "", tot.sum(), miss.sum(), miss.sum() / tot.sum()))
+    n_gt, n_pred, un, un_m, un_f = counts
+    print("\nspells: true {:.1f}  predicted {:.1f}".format(n_gt, n_pred))
+    print("unmatched true spells @IoU 0.5: {:.1f}  merged {:.1f}  fragmented {:.1f}  other {:.1f}".format(
+        un, un_m, un_f, un - un_m - un_f))
+
+
 def main(mode):
     with open(os.path.join(ROOT, "configs", "model.json")) as handle:
         cfg = json.load(handle)
+    if mode == "cuts":
+        return cuts(cfg)
     mids = bench.match_ids()
     matches = {mid: bench.load_match(mid) for mid in mids}
     periods = {mid: m["period"] for mid, m in matches.items()}

@@ -62,6 +62,17 @@ def predict_heads(heads, sym, anti):
     return q, 0.5 * (r_fwd + 1.0 - r_swp)
 
 
+def _logit(p):
+    p = np.clip(p, EPS, 1 - EPS)
+    return np.log(p) - np.log1p(-p)
+
+
+def blend_owner(r, r_nn, w):
+    """The HGB owner head and the neural one (src/owner_nn.py) averaged in log-odds, weight w on
+    r_nn (plan v3 E4). Keeps the team symmetry: swapping the teams maps the result to 1 - p."""
+    return 1.0 / (1.0 + np.exp(-((1 - w) * _logit(r) + w * _logit(r_nn))))
+
+
 # -- transition statistics from labelled matches -------------------------------------------------
 
 def transition_stats(labels, periods):
@@ -176,17 +187,123 @@ def viterbi(logE, state_of, self_cost, pred, adv, entry, last, exit_cost, log_de
     return path
 
 
+@numba.njit(cache=True)
+def _lse(a, b):
+    if a < b:
+        a, b = b, a
+    if b == -np.inf:
+        return a
+    return a + np.log1p(np.exp(b - a))
+
+
+@numba.njit(cache=True)
+def _draw(w, k):
+    """Index among the first k log-weights of w, drawn proportionally (never a zero weight)."""
+    m = w[0]
+    for i in range(1, k):
+        m = max(m, w[i])
+    tot = 0.0
+    for i in range(k):
+        tot += np.exp(w[i] - m)
+    u = np.random.random() * tot
+    pick = -1
+    for i in range(k):
+        e = np.exp(w[i] - m)
+        if e > 0:
+            pick = i
+            u -= e
+            if u < 0:
+                break
+    return pick
+
+
+@numba.njit(cache=True)
+def sample_paths(logE, state_of, self_cost, pred, adv, entry, last, exit_cost, log_dest,
+                 n_samples, seed):
+    """Forward filtering, backward sampling over the same chain as viterbi() (same start and
+    transition rules): n_samples state paths drawn from the posterior, seeded."""
+    np.random.seed(seed)
+    n_t, n = logE.shape[0], len(state_of)
+    Fw = np.full((n_t, n), -np.inf)
+    for s in range(4):
+        Fw[0, last[s]] = logE[0, s]
+    for t in range(1, n_t):
+        top = -np.inf
+        for j in range(n):
+            s = state_of[j]
+            acc = -np.inf
+            if pred[j] >= 0:
+                acc = Fw[t - 1, pred[j]] + adv[j]
+            else:
+                for s2 in range(4):
+                    if log_dest[s2, s] > -np.inf:
+                        acc = _lse(acc, Fw[t - 1, last[s2]] + exit_cost[s2] + log_dest[s2, s])
+            if self_cost[j] > -np.inf:
+                acc = _lse(acc, Fw[t - 1, j] + self_cost[j])
+            Fw[t, j] = acc + logE[t, s]
+            top = max(top, Fw[t, j])
+        for j in range(n):
+            Fw[t, j] -= top  # rescale; backward draws only compare weights within one frame
+    paths = np.empty((n_samples, n_t), np.int8)
+    w, idx = np.empty(6), np.empty(6, np.int64)
+    for k in range(n_samples):
+        j = _draw(Fw[n_t - 1], n)
+        paths[k, n_t - 1] = state_of[j]
+        for t in range(n_t - 1, 0, -1):
+            s, m = state_of[j], 0
+            if self_cost[j] > -np.inf:
+                idx[m], w[m] = j, Fw[t - 1, j] + self_cost[j]
+                m += 1
+            if pred[j] >= 0:
+                idx[m], w[m] = pred[j], Fw[t - 1, pred[j]] + adv[j]
+                m += 1
+            else:
+                for s2 in range(4):
+                    if log_dest[s2, s] > -np.inf:
+                        idx[m] = last[s2]
+                        w[m] = Fw[t - 1, last[s2]] + exit_cost[s2] + log_dest[s2, s]
+                        m += 1
+            j = idx[_draw(w, m)]
+            paths[k, t - 1] = state_of[j]
+    return paths
+
+
+MBR_CAND, MBR_REF = 8, 32
+
+
+def mbr(viterbi_codes, sample_codes, n_cand=MBR_CAND):
+    """Of the Viterbi path and the first n_cand samples, the one with the highest mean spellF1
+    against the other samples: minimum Bayes risk for the board metric (Goel & Byrne 2000).
+    Ties keep Viterbi."""
+    runs = [(0, len(viterbi_codes))]
+    cands = [viterbi_codes] + list(sample_codes[:n_cand])
+    gain = [np.mean([bench.pm.spell_scores(ref, c, runs)["mean_f1"] for ref in sample_codes[n_cand:]])
+            for c in cands]
+    return cands[int(np.argmax(gain))]
+
+
 def decode(q, r, period, heads, stats, cfg, force_dead=None):
     """Labels for every frame: Viterbi inside each half, X outside the halves. force_dead is an
-    optional boolean mask of frames that must be dead ball (before a half's kick-off)."""
+    optional boolean mask of frames that must be dead ball (before a half's kick-off).
+    With cfg["mbr"], each half takes mbr() over the Viterbi path and posterior samples drawn with
+    emissions tempered by cfg["mbr_alpha"] (default alpha); seeded per half, so deterministic."""
     arrays = chain(stats, cfg)
-    logE = log_emissions(q, r, heads["p_alive"], cfg["alpha"])
-    if force_dead is not None:
-        logE[force_dead, :2] = -np.inf
+
+    def emissions(alpha):
+        logE = log_emissions(q, r, heads["p_alive"], alpha)
+        if force_dead is not None:
+            logE[force_dead, :2] = -np.inf
+        return logE
+
+    logE = emissions(cfg["alpha"])
+    logS = emissions(cfg.get("mbr_alpha", cfg["alpha"])) if cfg.get("mbr") else None
     out = np.full(len(q), X, np.int8)
     for half in (1, 2):
         idx = np.flatnonzero(period == half)
         if not len(idx):
             continue
-        out[idx] = EMIT[viterbi(logE[idx], *arrays)]
+        codes = EMIT[viterbi(logE[idx], *arrays)]
+        if logS is not None:
+            codes = mbr(codes, EMIT[sample_paths(logS[idx], *arrays, MBR_CAND + MBR_REF, half)])
+        out[idx] = codes
     return out

@@ -31,32 +31,59 @@ from .nn_inputs import BALL_F, BALL_X, BALL_Y, STEP, TOK_F, TOK_X, TOK_Y, build_
 # fixed a priori, never tuned on the challenge
 CFG = {"d": 64, "hidden": 64, "heads": 4, "win": 50, "hop": 25, "epochs": 15,
        "windows_per_epoch": 16384, "batch": 256, "lr": 2e-3, "weight_decay": 1e-4, "seed": 0,
-       "seeds": (0, 1, 2)}
+       "seeds": (0, 1, 2),
+       # E6 (defaults = E4/v7): extra attention layers; auxiliary loss on a team-change target
+       # (direct H<->A within +-change_k steps), weight aux; the change head is never decoded
+       "layers": 1, "aux": 0.0, "change_k": 2}
 
 
 class OwnerNet(nn.Module):
-    def __init__(self, d=CFG["d"], hidden=CFG["hidden"], heads=CFG["heads"]):
+    def __init__(self, d=CFG["d"], hidden=CFG["hidden"], heads=CFG["heads"], layers=1, aux=False):
         super().__init__()
         self.tok = nn.Sequential(nn.Linear(TOK_F, d), nn.ReLU(), nn.Linear(d, d))
         self.ball = nn.Sequential(nn.Linear(BALL_F, d), nn.ReLU(), nn.Linear(d, d))
         self.team = nn.Parameter(torch.randn(2, d) * 0.1)
         self.attn = nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.1, batch_first=True)
+        # empty ModuleList / None add no state-dict keys, so the v7 weights still load
+        self.attn_more = nn.ModuleList(nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.1,
+                                                                  batch_first=True)
+                                       for _ in range(layers - 1))
         self.lstm = nn.LSTM(3 * d, hidden, batch_first=True, bidirectional=True)
         self.head = nn.Linear(2 * hidden, 1)
+        self.change = nn.Linear(2 * hidden, 1) if aux else None
 
-    def forward(self, tok, mask, ball):
-        """tok (B, S, 2, M, F), mask (B, S, 2, M), ball (B, S, Fb) -> logits (B, S)."""
+    def forward(self, tok, mask, ball, with_change=False):
+        """tok (B, S, 2, M, F), mask (B, S, 2, M), ball (B, S, Fb) -> logits (B, S)
+        (and the change logits (B, S) with with_change)."""
         B, S, _, M, _ = tok.shape
         x = self.tok(tok) + self.team[None, None, :, None, :]
         seq = torch.cat([self.ball(ball).reshape(B * S, 1, -1), x.reshape(B * S, 2 * M, -1)], 1)
         valid = torch.cat([torch.ones(B * S, 1, dtype=torch.bool, device=tok.device),
                            mask.reshape(B * S, 2 * M)], 1)
         h = self.attn(seq, src_key_padding_mask=~valid)
+        for layer in self.attn_more:
+            h = layer(h, src_key_padding_mask=~valid)
         w = mask.reshape(B * S, 2, M, 1).float()
         pooled = (h[:, 1:].reshape(B * S, 2, M, -1) * w).sum(2) / w.sum(2).clamp(min=1.0)
         frame = torch.cat([h[:, 0], pooled[:, 0], pooled[:, 1]], 1).reshape(B, S, -1)
         out, _ = self.lstm(frame)
+        if with_change:
+            return self.head(out).squeeze(-1), self.change(out).squeeze(-1)
         return self.head(out).squeeze(-1)
+
+
+def build(cfg=CFG):
+    return OwnerNet(cfg["d"], cfg["hidden"], cfg["heads"], cfg.get("layers", 1), cfg.get("aux", 0) > 0)
+
+
+def change_target(y, period, k):
+    """1 within +-k steps of a direct team change (consecutive live steps, same half, H<->A)."""
+    s = np.flatnonzero((y[1:] >= 0) & (y[:-1] >= 0) & (y[1:] != y[:-1])
+                       & (period[1:] == period[:-1]) & (period[1:] > 0)) + 1
+    c = np.zeros(len(y), np.float32)
+    for off in range(-k, k + 1):
+        c[np.clip(s + off, 0, len(y) - 1)] = 1.0
+    return c
 
 
 def _swap(tok, mask):
@@ -91,7 +118,9 @@ def fit(items, device, cfg=CFG, log=print):
     torch.manual_seed(cfg["seed"])
     win = cfg["win"]
     pool = [(i, s) for i, it in enumerate(items) for s in _starts(it[4], win)]
-    model = OwnerNet().to(device)
+    aux = cfg.get("aux", 0.0)
+    items = [it + (change_target(it[3], it[4], cfg.get("change_k", 2)),) for it in items]
+    model = build(cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     steps = cfg["epochs"] * (cfg["windows_per_epoch"] // cfg["batch"])
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, cfg["lr"], total_steps=steps)
@@ -102,8 +131,8 @@ def fit(items, device, cfg=CFG, log=print):
         total, count = 0.0, 0
         for b in range(0, len(pick) - cfg["batch"] + 1, cfg["batch"]):
             sel = [pool[k] for k in pick[b:b + cfg["batch"]]]
-            tok, mask, ball, y = (torch.from_numpy(np.stack([items[i][j][s:s + win] for i, s in sel]))
-                                  .to(device) for j in range(4))
+            tok, mask, ball, y, c = (torch.from_numpy(np.stack([items[i][j][s:s + win] for i, s in sel]))
+                                     .to(device) for j in (0, 1, 2, 3, 5))
             if rng.random() < 0.5:
                 tok, mask = _swap(tok, mask)
                 y = torch.where(y >= 0, 1 - y, y)
@@ -112,7 +141,12 @@ def fit(items, device, cfg=CFG, log=print):
             if rng.random() < 0.5:
                 tok, ball = _mirror(tok, ball, TOK_Y, BALL_Y)
             live = y >= 0
-            loss = loss_fn(model(tok, mask, ball)[live], y[live].float()) / live.sum().clamp(min=1)
+            if aux > 0:  # the change target is team- and mirror-invariant: no augmentation fix needed
+                z, zc = model(tok, mask, ball, with_change=True)
+                loss = (loss_fn(z[live], y[live].float()) / live.sum().clamp(min=1)
+                        + aux * nn.functional.binary_cross_entropy_with_logits(zc, c))
+            else:
+                loss = loss_fn(model(tok, mask, ball)[live], y[live].float()) / live.sum().clamp(min=1)
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -159,16 +193,18 @@ def upsample(p5, n_frames):
     return np.repeat(p5, STEP)[:n_frames]
 
 
-def infer(m, weight_paths, device="cpu"):
+def infer(m, weight_paths, device="cpu", cfg=None):
     """P(home | alive) at 25 fps for a match dict (src/atd.py or src/bench.py) from the final
-    seed models: their logits averaged, as for the bench ensemble in main."""
+    seed models: their logits averaged, as for the bench ensemble in main. cfg: overrides of CFG
+    the models were trained with (configs/model.json owner_nn.cfg; none for v7)."""
+    cfg = dict(CFG, **(cfg or {}))
     players, team, ball, period, pitch = downsample(m)
     tok, mask, ballf = build_inputs(players, team, ball, pitch)
     zs = []
     for path in weight_paths:
-        model = OwnerNet()
+        model = build(cfg)
         model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
-        zs.append(predict_logits(model.to(device), tok, mask, ballf, period, device))
+        zs.append(predict_logits(model.to(device), tok, mask, ballf, period, device, cfg))
     return upsample(sigmoid(np.mean(zs, axis=0)), len(m["period"]))
 
 
@@ -192,8 +228,10 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--smoke", action="store_true",
                         help="one tiny fold end to end, to check the pipeline before the real run")
+    parser.add_argument("--cfg", default="{}", help='JSON overrides of CFG, e.g. \'{"aux": 0.5}\'')
     args = parser.parse_args()
-    cfg = dict(CFG, epochs=1, windows_per_epoch=1024) if args.smoke else CFG
+    cfg = dict(CFG, **json.loads(args.cfg))
+    cfg = dict(cfg, epochs=1, windows_per_epoch=1024) if args.smoke else cfg
     device = "cuda" if torch.cuda.is_available() else "cpu"
     os.makedirs(args.out, exist_ok=True)
     print("torch {}  device {}  cfg {}".format(torch.__version__, device, cfg), flush=True)

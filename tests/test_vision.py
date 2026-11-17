@@ -48,3 +48,11 @@ def test_agreement_reports_distance_where_both_exist():
     ball = np.array([[0.0, 0], [np.nan, np.nan], [10, 10]])
     n, med, share = V.agreement(np.array([0, 1, 2]), np.array([[1.0, 0], [5, 5], [10, 14]]), ball)
     assert n == 2 and np.isclose(med, 2.5) and share == 0.5
+
+
+def test_seen_runs_keeps_atd_ball_stretches_inside_segments():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    from vision_segments import seen_runs
+    missing = np.ones(40, bool)
+    missing[2:8] = missing[10:12] = missing[30:35] = False   # runs of 6, 2 (too short) and 5 frames
+    assert seen_runs([(0, 20, 1), (28, 40, 2)], missing) == [(2, 8, 1), (30, 35, 2)]

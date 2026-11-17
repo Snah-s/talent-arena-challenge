@@ -57,7 +57,8 @@ def main():
     nn_cfg = cfg.get("owner_nn")
     if nn_cfg:
         from src import owner_nn  # torch is only needed here
-        r = P.blend_owner(r, owner_nn.infer(m, [os.path.join(ROOT, p) for p in nn_cfg["models"]]),
+        r = P.blend_owner(r, owner_nn.infer(m, [os.path.join(ROOT, p) for p in nn_cfg["models"]],
+                                                  cfg=nn_cfg.get("cfg")),
                           nn_cfg["weight"])
         print("owner head: HGB + neural ({} seeds, weight {})".format(len(nn_cfg["models"]),
                                                                      nn_cfg["weight"]))

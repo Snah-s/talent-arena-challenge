@@ -1,6 +1,6 @@
 """Colab detections + local homography -> ball positions for the ATD's gaps.
 
-    python scripts/vision_fuse.py [--det external/vision/out]
+    python scripts/vision_fuse.py [--det external/vision/out] [--check-only]
 
 Reads OUT/detections.csv and OUT/status.json from src/ball_detect.py, refuses them if the video
 decode did not match the reference frame count, projects every candidate to metres with that
@@ -26,12 +26,15 @@ from src.atd import load_atd  # noqa: E402
 from load_homography import load as load_homography  # noqa: E402  (starter/ on the path via src.atd)
 
 CHECK_MEDIAN_M = 5.0  # a correct pipeline puts detections next to the ATD ball, not metres away
+CHECK_MIN_N = 30      # fewer overlapping frames than this and the median says nothing: refuse
 OUT = os.path.join(ROOT, "external", "vision", "ball_vision.npz")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--det", default=os.path.join(ROOT, "external", "vision", "out"))
+    parser.add_argument("--check-only", action="store_true",
+                        help="run the pipeline check and stop (first pass over segments_pads.csv)")
     args = parser.parse_args()
     with open(os.path.join(args.det, "status.json")) as handle:
         status = json.load(handle)
@@ -51,9 +54,16 @@ def main():
     n_chk, med, share = V.agreement(f, p, ball)
     print("check vs ATD ball where both exist: n {}  median {:.2f} m  within 3 m {:.2f}".format(
         n_chk, med, share))
-    if n_chk and med > CHECK_MEDIAN_M:
+    if n_chk < CHECK_MIN_N:
+        sys.exit("refused: only {} accepted detections overlap the ATD ball (< {})".format(
+            n_chk, CHECK_MIN_N))
+    if med > CHECK_MEDIAN_M:
         sys.exit("refused: detections sit {:.1f} m from the ATD ball; alignment or homography "
-                 "convention is wrong".format(med))
+                 "convention is wrong, or the detector does not see the ball".format(med))
+    if args.check_only:
+        print("check passed ({} detection rows, {} accepted); run the full segments next".format(
+            len(det), len(f)))
+        return
 
     filled_ball, filled = V.fill(ball, f, p)
     graded = m["period"] > 0

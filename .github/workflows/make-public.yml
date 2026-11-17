@@ -1,0 +1,20 @@
+name: Make repository public
+
+on:
+  schedule:
+    - cron: '30 22 17 11 *'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Change repository visibility
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_TOKEN }}
+        run: |
+          if [ "$(date -u +%Y-%m-%d)" != "2026-11-17" ]; then
+            echo "Scheduled date has passed; nothing to do."
+            exit 0
+          fi
+          gh api --method PATCH repos/${{ github.repository }} -f visibility=public

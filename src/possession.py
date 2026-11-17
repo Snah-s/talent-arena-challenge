@@ -133,20 +133,45 @@ def chain(stats, cfg):
             np.array(adv), entry, last, exit_cost, log_dest)
 
 
-def log_emissions(q, r, p_alive, alpha):
-    """Scaled likelihoods log p(state|x) - log p(state), tempered by alpha for frame correlation.
-    (A separate temperature for the owner head was tried: the bench picks it equal to alpha.)"""
+def log_emissions(q, r, p_alive, alpha, beta=None):
+    """Scaled likelihoods log p(state|x) - log p(state), tempered for frame correlation: alpha on
+    the alive head, beta on the owner head (beta = alpha when not given)."""
+    beta = alpha if beta is None else beta
     q, r = np.clip(q, EPS, 1 - EPS), np.clip(r, EPS, 1 - EPS)
-    live = np.log(q) - np.log(p_alive)
-    dead = np.log1p(-q) - np.log1p(-p_alive)
-    e = np.column_stack([live + np.log(2 * r), live + np.log(2 * (1 - r)), dead, dead])
-    return alpha * e
+    live = alpha * (np.log(q) - np.log(p_alive))
+    dead = alpha * (np.log1p(-q) - np.log1p(-p_alive))
+    return np.column_stack([live + beta * np.log(2 * r), live + beta * np.log(2 * (1 - r)), dead, dead])
+
+
+def _side_means(x, k):
+    """Mean of x over the k frames before each frame and over it and the k - 1 after."""
+    c = np.concatenate(([0.0], np.cumsum(x)))
+    i = np.arange(len(x))
+    lo, hi = np.maximum(i - k, 0), np.minimum(i + k, len(x))
+    return (c[i] - c[lo]) / np.maximum(i - lo, 1), (c[hi] - c[i]) / np.maximum(hi - i, 1)
+
+
+def switch_bonus(r, period, sw=None):
+    """Per-frame log bonus (n, 2) on direct LH->LA and LA->LH changes: a constant gamma plus b
+    times the drop (rise) of the owner logit from the k frames before to the k after. The HSMM
+    otherwise merges short possessions; swapping the teams swaps the two columns. Zero without sw."""
+    out = np.zeros((len(r), 2))
+    if not sw:
+        return out
+    z = _logit(r)
+    for half in np.unique(period[period > 0]):
+        idx = np.flatnonzero(period == half)
+        past, fut = _side_means(z[idx], sw["k"])
+        out[idx, 0] = sw["gamma"] + sw["b"] * np.maximum(0.0, past - fut)
+        out[idx, 1] = sw["gamma"] + sw["b"] * np.maximum(0.0, fut - past)
+    return out
 
 
 @numba.njit(cache=True)
-def viterbi(logE, state_of, self_cost, pred, adv, entry, last, exit_cost, log_dest):
-    """MAP state path over the expanded chain built by chain(). Every state starts in its last
-    sub-state (the first visit counts as already long); the last visit may be cut by the end."""
+def viterbi(logE, sw, state_of, self_cost, pred, adv, entry, last, exit_cost, log_dest):
+    """MAP state path over the expanded chain built by chain(), with switch_bonus() sw added to
+    the LH<->LA changes at each frame. Every state starts in its last sub-state (the first visit
+    counts as already long); the last visit may be cut by the end."""
     n_t, n = logE.shape[0], len(state_of)
     V = np.full(n, -np.inf)
     for s in range(4):
@@ -163,6 +188,10 @@ def viterbi(logE, state_of, self_cost, pred, adv, entry, last, exit_cost, log_de
                 for s2 in range(4):
                     if log_dest[s2, s] > -np.inf:
                         v = V[last[s2]] + exit_cost[s2] + log_dest[s2, s]
+                        if s2 == LH and s == LA:
+                            v += sw[t, 0]
+                        elif s2 == LA and s == LH:
+                            v += sw[t, 1]
                         if v > best:
                             best, arg = v, last[s2]
             if self_cost[j] > -np.inf:
@@ -185,7 +214,8 @@ def decode(q, r, period, heads, stats, cfg, force_dead=None):
     """Labels for every frame: Viterbi inside each half, X outside the halves. force_dead is an
     optional boolean mask of frames that must be dead ball (before a half's kick-off)."""
     arrays = chain(stats, cfg)
-    logE = log_emissions(q, r, heads["p_alive"], cfg["alpha"])
+    logE = log_emissions(q, r, heads["p_alive"], cfg["alpha"], cfg.get("beta"))
+    sw = switch_bonus(r, period, cfg.get("switch"))
     if force_dead is not None:
         logE[force_dead, :2] = -np.inf
     out = np.full(len(q), X, np.int8)
@@ -193,5 +223,5 @@ def decode(q, r, period, heads, stats, cfg, force_dead=None):
         idx = np.flatnonzero(period == half)
         if not len(idx):
             continue
-        out[idx] = EMIT[viterbi(logE[idx], *arrays)]
+        out[idx] = EMIT[viterbi(logE[idx], sw[idx], *arrays)]
     return out

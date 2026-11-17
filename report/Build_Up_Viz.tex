@@ -34,11 +34,12 @@ We label every frame of the tactical video as home possession (\code{H}), away p
 dead ball (\code{D}) or no answer (\code{X}). Two gradient-boosted heads estimate whether the ball is
 alive and which team owns it, and a transformer-plus-LSTM owner head strengthens the second. A
 four-state hidden semi-Markov model with minimum durations turns the per-frame probabilities into
-whole possessions. Ball positions detected in the video fill part of the tracking's ball gaps.
+whole possessions, with a bonus on owner changes where the owner probability jumps. Ball positions
+detected in the video fill part of the tracking's ball gaps.
 Everything that is trained or tuned uses the seven public Sportec Open DFL matches, degraded to look
 like automatic tracking; on the challenge game the model is only run. On the DFL bench, with each
-match held out in turn, the model reaches spellF1~0.655, against 0.182 for the organisers' baseline.
-The submitted version scores 0.671 on the public five-minute window (5--95\,\% bootstrap: 0.46--0.86).
+match held out in turn, the model reaches spellF1~0.665, against 0.182 for the organisers' baseline.
+The submitted version scores 0.752 on the public five-minute window (5--95\,\% bootstrap: 0.56--0.91).
 \end{abstract}
 
 \section{Approach}
@@ -118,17 +119,25 @@ in log-odds with weight $w = 0.75$, chosen out of fold. Every $w > 0$ won on all
 \paragraph{Sequence model.} A four-state hidden semi-Markov model (Figure~\ref{fig:hmm}) has live
 states LH and LA, and dead states DH and DA, which remember the last owner and both emit \code{D}.
 Emissions are the heads' scaled likelihoods, tempered by $\alpha$ because consecutive frames are
-correlated, with $\pi$ the bench share of live frames:
+correlated ($\alpha$ for the alive head, $\beta$ for the owner), with $\pi$ the bench share of
+live frames:
 \[
-  e(\mathrm{LH}) = \alpha\Big[\log\tfrac{q}{\pi} + \log 2r'\Big],\quad
-  e(\mathrm{LA}) = \alpha\Big[\log\tfrac{q}{\pi} + \log 2(1-r')\Big],\quad
+  e(\mathrm{LH}) = \alpha\log\tfrac{q}{\pi} + \beta\log 2r',\quad
+  e(\mathrm{LA}) = \alpha\log\tfrac{q}{\pi} + \beta\log 2(1-r'),\quad
   e(\mathrm{D\cdot}) = \alpha \log\tfrac{1-q}{1-\pi}.
 \]
 Each state is expanded into $m-1$ forced sub-states plus a geometric tail matching the bench mean
 duration, the explicit-duration construction of~\cite{yu2010hsmm}. Transitions come from the bench
 labels: a live state either switches team directly or goes dead, and a dead state restarts with
-either team; everything else is forbidden. Viterbi~\cite{rabiner} decodes each half. A 60-point grid
-with one match held out chose $\alpha = 0.75$, live $\geq 3$\,s and dead $\geq 4$\,s.
+either team; everything else is forbidden. Viterbi~\cite{rabiner} decodes each half.
+
+\paragraph{Owner-change bonus.} The decoder merged short possessions. A direct change LH$\to$LA at
+frame $t$ therefore gains $\gamma + b\max(0, \bar z^{-}_t - \bar z^{+}_t)$ in log score, where
+$\bar z^{\mp}_t$ is the mean owner logit $\operatorname{logit} r'$ over the 2\,s before and after
+$t$; LA$\to$LH gains the mirror term, so swapping the teams swaps the two. Re-tuning
+the decoder for the blended owner head (675 configurations) and then the bonus (49) chose
+$\alpha = 1$, $\beta = 0.75$, live $\geq 2.5$\,s, dead $\geq 4$\,s, $\gamma = 4$, $b = 2$. Both were
+judged by a nested estimate: each match is scored with the configuration best on the other six.
 
 \begin{figure}[t]
   \centering
@@ -170,12 +179,14 @@ change is adopted only if it raises the mean \emph{and} wins on at least 5 of 7 
     \code{baseline\_smooth50} & organisers' baseline & 0.182 & 0.484 \\
     v1 & heads + HSMM & 0.544 & --- \\
     v6 & features, pseudo-tags, decoder grid & 0.605 & 0.876 \\
-    v7 & + neural owner head (7/7 matches better) & \textbf{0.655} & \textbf{0.888} \\
-    v8 (submitted) & + video ball fill & 0.671$^{*}$ & 0.891$^{*}$ \\
+    v7 & + neural owner head (7/7 matches better) & 0.655 & 0.888 \\
+    v8 & + video ball fill & 0.671$^{*}$ & 0.891$^{*}$ \\
+    v9 (submitted) & + re-tuned decoder, change bonus (5/7) & \textbf{0.665} & \textbf{0.890} \\
     \bottomrule
   \end{tabular}
-  \caption{Bench results, one match held out at a time. $^{*}$The bench has no video, so v8 is
-  scored only on the public five-minute window, where v7 scores 0.650 and 0.866 (Section~2).}
+  \caption{Bench results, one match held out at a time; v9 is the nested estimate. $^{*}$The bench
+  has no video, so v8 is scored only on the public five-minute window, where v7 scores 0.650 and
+  0.866 (Section~2). v9 adds its decoder to v8 and scores 0.752 and 0.899 there.}
   \label{tab:bench}
 \end{table}
 
@@ -183,7 +194,7 @@ change is adopted only if it raises the mean \emph{and} wins on at least 5 of 7 
   \centering
   \includegraphics[width=0.8\textwidth]{figures/results.pdf}
   \caption{Left: bench spellF1 by version, against v6 with a perfect owner. Right: the public window,
-  with 17 possessions, where the versions are indistinguishable.}
+  with 17 possessions, where the intervals overlap.}
   \label{fig:results}
 \end{figure}
 
@@ -196,9 +207,10 @@ direct home-to-away changes. Across matches, the share of missing ball predicts 
 (correlation $-0.83$).
 
 \paragraph{Public window.} It set no parameter. Scores, with 5--95\,\% bootstrap intervals: v6 0.645
-(0.44--0.83), v7 0.650 (0.45--0.84), v8 0.671 (0.46--0.86). These differences are noise. v8 is
-submitted because its fusion passed the check that the plan set, before the video run, as the
-condition for using it. We disclose that all three had been scored on the window before the choice.
+(0.44--0.83), v7 0.650 (0.45--0.84), v8 0.671 (0.46--0.86), v9 0.752 (0.56--0.91). These differences
+are within noise. The video fill is used because its fusion passed the check that the plan set,
+before the video run, as the condition for using it; v9's decoder was adopted on the bench rule
+alone. We disclose that v6--v8 had been scored on the window before those choices, and v9 after.
 
 \section{Assets used and dropped}
 
@@ -258,7 +270,7 @@ The rules follow the challenge's definitions and Laws~8 and~9 of the Laws of the
     to the team that had the ball.
   \item[Restarts.] After a dead ball the restarting team has possession immediately; set-piece tags
     and configurations say who restarts. Each half is dead until its kick-off window.
-  \item[Durations.] Dead stretches last at least 4\,s and live possessions at least 3\,s.
+  \item[Durations.] Dead stretches last at least 4\,s and live possessions at least 2.5\,s.
   \item[Abstention.] \code{X} only outside the two halves, never on a frame that could be graded.
 \end{description}
 
@@ -269,18 +281,15 @@ The rules follow the challenge's definitions and Laws~8 and~9 of the Laws of the
     up to 221\,s, against 0.5--4\,s on the bench. Recalibrating would mean calibrating on the
     challenge data, so the bench probably overestimates our score. The video fills only 17\,\% of
     the gap frames.
-  \item \textbf{Merged possessions.} Quick home-to-away exchanges are the main remaining error.
-  \item \textbf{Annotator criterion.} DFL's flag and Metrica's annotators may disagree on duels and
-    loose balls; the 2\,s rule is a proxy.
-  \item \textbf{Tracking geometry.} 2.1\,\% of seen balls lie more than 2\,m outside the pitch, never
-    seen on the bench.
+  \item \textbf{Merged possessions.} Still the main error. A learned change probability (an
+    auxiliary loss on the owner network) added nothing to the bonus.
+  \item \textbf{Annotator criterion.} DFL and Metrica may disagree on duels; the 2\,s rule is a proxy.
+  \item \textbf{Tracking geometry.} 2.1\,\% of seen balls lie over 2\,m off the pitch, unseen on the bench.
   \item \textbf{Vision.} 27\,\% of accepted detections lie more than 3\,m from the tracked ball where
-    both exist. The tiling was decided after the full-frame pass failed the check: a declared
-    deviation, a single attempt with no values swept. The video was processed on Google Colab from
-    the organisers' shared folder with no AI assistant enabled, which we flag as a risk. GPU
-    inference may differ slightly across GPU models, hence the intermediate detection file.
-  \item \textbf{Future work.} An owner head trained with a change-aware loss, a touch head trained on
-    DFL events, and temporal tracking of ball candidates.
+    both exist. Tiling came after the full-frame pass failed the check (declared; one try, no sweep). The video was processed on Google Colab from
+    the organisers' shared folder with no AI assistant enabled, which we flag as a risk.
+  \item \textbf{Future work.} A touch head trained on DFL events, change labels from DFL passes and
+    duels instead of the 2\,s rule, and temporal tracking of ball candidates.
 \end{itemize}
 
 \section{Reproduction}
@@ -295,10 +304,10 @@ python scripts/make_submission.py --team Build_Up_Viz \
 The WASB detections are an intermediate file. We provide them on request, and the notebook
 \code{notebooks/vision\_ball.ipynb} regenerates them. The pipeline is deterministic: a clean clone with empty caches
 reproduces \code{Build\_Up\_Viz.csv} byte for byte in about 10 minutes on a CPU. Without
-\code{--ball-fill} it needs only the challenge data and the DFL bench, and gives v7. Twenty-four unit
-tests cover the label rule, the degradation, the team symmetry and the Viterbi decoder.
+\code{--ball-fill} it needs only the challenge data and the DFL bench. Twenty-five unit tests cover
+the label rule, the degradation, the team symmetry and the Viterbi decoder with the change bonus.
 
-\begin{thebibliography}{15}\small
+\begin{thebibliography}{15}\footnotesize
   \setlength{\itemsep}{0pt}
   \bibitem{dfl} M.~Bassek, R.~Rein, H.~Weber and D.~Memmert. An integrated dataset of spatiotemporal
     and event data in elite soccer. \emph{Scientific Data} 12:195, 2025.

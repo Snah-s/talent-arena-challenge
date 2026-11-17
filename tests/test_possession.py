@@ -47,7 +47,7 @@ def test_viterbi_matches_enumeration():
         cfg = {"min_live": 1 + trial % 3, "min_dead": 1 + (trial // 2) % 3}
         arrays = P.chain(stats, cfg)
         mins, logT, logStay = _rules(arrays)
-        path = P.viterbi(logE, *arrays)
+        path = P.viterbi(logE, np.zeros((len(logE), 2)), *arrays)
         assert np.isclose(_score(path, logE, mins, logT, logStay), _brute(logE, mins, logT, logStay))
 
 
@@ -58,7 +58,8 @@ def _stats(rng):
 
 
 def test_viterbi_matches_dense_viterbi():
-    """The chain Viterbi against a plain dense Viterbi over the expanded transition matrix."""
+    """The chain Viterbi against a plain dense Viterbi over the expanded transition matrix, with a
+    per-frame switch bonus on the LH<->LA changes."""
     rng = np.random.default_rng(3)
     stats = _stats(rng)
     for cfg in ({"min_live": 3, "min_dead": 2}, {"min_live": 1, "min_dead": 5}):
@@ -75,14 +76,21 @@ def test_viterbi_matches_dense_viterbi():
             for s in range(4):
                 A[last[s2], entry[s]] = max(A[last[s2], entry[s]], exit_cost[s2] + log_dest[s2, s])
         logE = rng.normal(0, 1.5, (40, 4))
+        sw = rng.normal(1, 2, (40, 2))
+
+        def A_at(t):
+            At = A.copy()
+            At[last[P.LH], entry[P.LA]] += sw[t, 0]
+            At[last[P.LA], entry[P.LH]] += sw[t, 1]
+            return At
         V = np.full(n, -np.inf)
         V[last] = logE[0, state_of[last]]
         for t in range(1, 40):
-            V = (V[:, None] + A).max(0) + logE[t, state_of]
-        path = P.viterbi(logE, *arrays)
+            V = (V[:, None] + A_at(t)).max(0) + logE[t, state_of]
+        path = P.viterbi(logE, sw, *arrays)
         Vp = np.where(state_of == path[0], np.where(np.isin(np.arange(n), last), logE[0, state_of], -np.inf), -np.inf)
         for t in range(1, 40):
-            Vp = np.where(state_of == path[t], (Vp[:, None] + A).max(0) + logE[t, state_of], -np.inf)
+            Vp = np.where(state_of == path[t], (Vp[:, None] + A_at(t)).max(0) + logE[t, state_of], -np.inf)
         assert np.isclose(Vp.max(), V.max())
 
 
@@ -135,3 +143,14 @@ def test_blend_owner_keeps_team_symmetry_and_endpoints():
     np.testing.assert_allclose(P.blend_owner(r, r_nn, 1.0), r_nn, atol=1e-9)
     np.testing.assert_allclose(P.blend_owner(1 - r, 1 - r_nn, 0.75), 1 - P.blend_owner(r, r_nn, 0.75),
                                atol=1e-9)
+
+
+def test_switch_bonus_swaps_with_the_teams():
+    rng = np.random.default_rng(5)
+    r = 1 / (1 + np.exp(-np.cumsum(rng.normal(0, 0.3, 600))))
+    period = np.repeat([0, 1, 2], 200)
+    sw = {"gamma": 4.0, "b": 2.0, "k": 50}
+    b1, b2 = P.switch_bonus(r, period, sw), P.switch_bonus(1 - r, period, sw)
+    np.testing.assert_allclose(b1, b2[:, ::-1], atol=1e-9)
+    assert (b1[period > 0] >= sw["gamma"]).all() and (b1[period == 0] == 0).all()
+    assert not P.switch_bonus(r, period).any()

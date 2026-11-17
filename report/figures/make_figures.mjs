@@ -201,7 +201,7 @@ function results() {
     }
     return g;
   };
-  const bench = [["baseline", 0.182, C.dead], ["v1", 0.544, "#8fb3df"], ["v6", 0.605, "#5a8fd0"], ["v7", 0.655, C.home]];
+  const bench = [["baseline", 0.182, C.dead], ["v1", 0.544, "#8fb3df"], ["v6", 0.605, "#5a8fd0"], ["v7", 0.655, "#3b74c4"], ["v9", 0.665, C.home]];
   const x1 = d3.scaleBand().domain(bench.map((d) => d[0])).range([m.l + 10, 470]).padding(0.35);
   const g1 = panel(m.l + 10, 460 - m.l, "DFL bench, leave one match out (spellF1)");
   for (const [k, v, c] of bench) {
@@ -212,9 +212,9 @@ function results() {
   g1.append("line").attr("x1", m.l + 10).attr("x2", 470).attr("y1", y(0.79)).attr("y2", y(0.79))
     .attr("stroke", C.trainInk).attr("stroke-dasharray", "6 4").attr("stroke-width", 1.4);
   label(g1, 470, y(0.79) - 13, "v6 with a perfect owner: 0.79", { anchor: "end", color: C.trainInk, size: 14.5 });
-  label(g1, (m.l + 480) / 2, 400 - 16, "v8 adds the video ball fill: not measurable on the bench (no video)", { size: 13.5, italic: true });
+  label(g1, (m.l + 480) / 2, 400 - 16, "v8/v9 video ball fill: not measurable on the bench (no video)", { size: 13.5, italic: true });
 
-  const pub = [["v6", 0.645, 0.44, 0.83, "#5a8fd0"], ["v7", 0.650, 0.45, 0.84, C.home], ["v8 (submitted)", 0.671, 0.46, 0.86, "#1d4f8f"]];
+  const pub = [["v6", 0.645, 0.44, 0.83, "#5a8fd0"], ["v7", 0.650, 0.45, 0.84, "#3b74c4"], ["v8", 0.671, 0.46, 0.86, "#2a5fa8"], ["v9", 0.752, 0.56, 0.91, "#1d4f8f"]];
   const x2 = d3.scaleBand().domain(pub.map((d) => d[0])).range([570, 960]).padding(0.4);
   const g2 = panel(570, 390, "Public 5-min window (spellF1, 5-95 % interval)");
   for (const [k, v, lo, hi, c] of pub) {
@@ -225,7 +225,7 @@ function results() {
     label(g2, cx, y(hi) - 15, v.toFixed(3), { color: C.ink, size: 14.5 });
     label(g2, cx, y(0) + 18, k, { color: C.ink, size: 15 });
   }
-  label(g2, 765, 400 - 16, "17 possessions: the intervals overlap almost entirely", { size: 13.5, italic: true });
+  label(g2, 765, 400 - 16, "17 possessions: the intervals overlap", { size: 13.5, italic: true });
   save("results");
 }
 

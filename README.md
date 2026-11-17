@@ -19,8 +19,8 @@ ball fill ─────┘   (team-symmetric)       └─ r = P(home owns | a
   ATD ball + WASB detections                                          + neural owner head)
   in the ATD's gaps                                   │
                                                       v
-                              4-state HMM (live/dead × home/away) with minimum durations,
-                              Viterbi per half  ──>  frame,label CSV
+                              4-state HMM (live/dead × home/away) with minimum durations
+                              and a bonus on owner changes, Viterbi per half  ──>  frame,label CSV
 ```
 
 Everything that is trained or tuned is trained or tuned on an **external** bench: the seven
@@ -34,7 +34,7 @@ Python 3.11 (tested with 3.11.15).
 ```bash
 pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-solution.txt
-python -m pytest -q        # 24 tests
+python -m pytest -q        # 25 tests
 ```
 
 ## Data
@@ -82,8 +82,8 @@ GPU inference is not guaranteed to be bit-identical across GPU models, so regene
 may differ slightly from ours. With the provided intermediate file, the CSV is identical.
 
 **Without the detections**, `python scripts/make_submission.py --team Build_Up_Viz` (no
-`--ball-fill`) needs only the challenge data and the DFL bench. It gives our previous version (v7),
-fully reproducible.
+`--ball-fill`) needs only the challenge data and the DFL bench, and is fully reproducible. It gives
+the same model on the ATD ball alone.
 
 ## Retraining and evaluation on the bench (optional)
 
@@ -92,6 +92,8 @@ fully reproducible.
 | `python scripts/bench_eval.py` | leave-one-match-out grid for the decoder parameters → `configs/model.json` |
 | `python scripts/export_nn_bench.py` + [notebooks/e4_owner_nn.ipynb](notebooks/e4_owner_nn.ipynb) | trains the neural owner head on the DFL bench (GPU) → `models/owner_nn_s*.pt` |
 | `python scripts/nn_eval.py` | out-of-fold evaluation of the neural head blend |
+| `python scripts/decoder_eval.py` | nested re-tuning of the decoder for the blended owner head |
+| `python scripts/switch_eval.py` | nested evaluation of the owner-change bonus (v9) |
 | `python scripts/diagnose_bench.py` | oracle diagnostics (perfect ball, perfect alive/dead, perfect owner) |
 
 ## Layout

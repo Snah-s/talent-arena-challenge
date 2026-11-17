@@ -28,7 +28,7 @@ def load_atd(game=GAME, data_dir=None):
             parts = line.rstrip("\n").split(":")
             if len(parts) != 3:
                 continue
-            row = int(parts[0]) - 1  # ATD frame_id counts from 1
+            row = int(parts[0]) - 1
             p = np.array(parts[1].replace(";", ",").split(","), dtype=np.float32).reshape(k, -1)
             players[row] = p[:, :2]
             ball[row, :2] = np.array(parts[2].split(",")[:2], dtype=np.float32)

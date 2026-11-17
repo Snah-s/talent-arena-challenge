@@ -31,25 +31,21 @@ DFL_DIR = os.path.join(ROOT, "external", "dfl")
 H, A, D, X = 0, 1, 2, 3
 SECTIONS = {"firstHalf": 1, "secondHalf": 2}
 
-# Degradation ranges. Chosen wide on purpose and NOT measured on the challenge ATD (PLAN.md s.4):
-# a parameter set is kept only if it does well across the whole range.
 DEGRADE_RANGES = {
-    "ball_missing": (0.20, 0.60),     # fraction of frames without a ball
-    "ball_gap_s": (0.5, 4.0),          # mean gap length
-    "w_aerial": (0.5, 2.5),            # log-hazard boost while the ball is above 1.5 m
-    "w_crowd": (0.5, 2.5),             # ... with >= 3 players within 3 m of the ball
-    "w_dead": (0.0, 2.0),              # ... while the ball is dead
+    "ball_missing": (0.20, 0.60),
+    "ball_gap_s": (0.5, 4.0),
+    "w_aerial": (0.5, 2.5),
+    "w_crowd": (0.5, 2.5),
+    "w_dead": (0.0, 2.0),
     "player_missing": (0.02, 0.15),
     "player_gap_s": (0.5, 10.0),
     "noise_player_m": (0.05, 0.5),
     "noise_ball_m": (0.05, 0.5),
-    "dup_frac": (0.0, 0.05),           # frames with a duplicated player (DATA.md: >22 objects)
-    "phantom_frac": (0.0, 0.03),       # false ball detections, generic to automatic detectors
+    "dup_frac": (0.0, 0.05),
+    "phantom_frac": (0.0, 0.03),
 }
-N_DUP = 2  # extra columns for duplicates: one per team, since a column's team is fixed
+N_DUP = 2
 
-
-# -- loading -------------------------------------------------------------------------------------
 
 def _match_files(match_id):
     raw = os.path.join(DFL_DIR, "raw")
@@ -71,7 +67,7 @@ def parse_dfl(match_id):
         raise ValueError("{}: expected one home and one guest team".format(info_path))
 
     pitch = None
-    tracks = {}  # (period, object id) -> list of attribute tuples
+    tracks = {}
     current = None
     for event, el in etree.iterparse(pos_path, events=("start", "end"),
                                      tag=("PitchSize", "FrameSet", "Frame")):
@@ -80,7 +76,7 @@ def parse_dfl(match_id):
                 period = SECTIONS.get(el.get("GameSection"))
                 team = el.get("TeamId")
                 if period is None or (team != "BALL" and team not in team_of):
-                    current = None  # referees and extra time
+                    current = None
                 else:
                     key = (period, "BALL" if team == "BALL" else el.get("PersonId"))
                     current = tracks.setdefault(key, [])
@@ -93,7 +89,6 @@ def parse_dfl(match_id):
             g = el.get
             current.append((int(g("N")), float(g("X")), float(g("Y")), float(g("Z") or "nan"),
                             int(g("BallStatus") or -1), int(g("BallPossession") or -1)))
-        # Drop finished elements and their earlier siblings, or the tree keeps millions of shells.
         el.clear(keep_tail=False)
         while el.getprevious() is not None:
             del el.getparent()[0]
@@ -109,7 +104,7 @@ def parse_dfl(match_id):
         n = n1 - n0 + 1
         b = np.full((n, 3), np.nan, np.float32)
         idx = ball[:, 0].astype(int) - n0
-        b[idx] = ball[:, 1:4] + (length / 2, width / 2, 0)  # DFL origin is the centre spot
+        b[idx] = ball[:, 1:4] + (length / 2, width / 2, 0)
         status = np.full(n, -1, np.int8)
         owner = np.full(n, -1, np.int8)
         status[idx], owner[idx] = ball[:, 4], ball[:, 5]
@@ -131,7 +126,6 @@ def parse_dfl(match_id):
     label = dfl_labels(status, owner)
     return {"players": players, "team": team, "ball": ball, "period": period, "label": label,
             "pitch": np.array(pitch, np.float32), "match_id": match_id,
-            # live frames with no owner, filled by dfl_labels; reported so it is never silent
             "unknown_owner": np.int64(((status != 0) & ~np.isin(owner, (1, 2))).sum())}
 
 
@@ -139,7 +133,6 @@ def dfl_labels(status, owner):
     """D where BallStatus is 0, else the BallPossession team. Unknown owners inherit the last."""
     label = np.where(status == 0, D, np.where(owner == 1, H, np.where(owner == 2, A, X)))
     label = label.astype(np.int8)
-    # Live frames without an owner carry the previous label, like the scorer's abstention fill.
     unknown = label == X
     if unknown.any():
         carry = np.maximum.accumulate(np.where(~unknown, np.arange(len(label)), 0))
@@ -147,8 +140,8 @@ def dfl_labels(status, owner):
     return label
 
 
-CONTROL_S = 2.0  # fixed a priori from CHALLENGE.md's "keeps the ball for a few seconds"; never
-CONTROL_SENSITIVITY_S = (1.0, 2.0, 3.0)  # tuned on GT. Models must hold up at all three.
+CONTROL_S = 2.0
+CONTROL_SENSITIVITY_S = (1.0, 2.0, 3.0)
 
 
 def controlled_labels(label, period, min_s=CONTROL_S, fps=25):
@@ -200,8 +193,6 @@ def match_ids():
     return sorted(os.path.basename(p).rsplit("-", 1)[1][:-4] for p in paths)
 
 
-# -- degradation ---------------------------------------------------------------------------------
-
 def sample_degradation(rng):
     return {k: float(rng.uniform(lo, hi)) for k, (lo, hi) in DEGRADE_RANGES.items()}
 
@@ -220,7 +211,7 @@ def _gaps(weight, target, mean_len, rng):
 
     def mask(base):
         ends = np.where(u < base * weight, t + lengths, 0)
-        reach = np.maximum.accumulate(ends)  # furthest gap end started at or before t
+        reach = np.maximum.accumulate(ends)
         return reach > t
 
     lo, hi = 0.0, 1.0 / weight.min()
@@ -235,9 +226,8 @@ def degrade(m, cfg, rng, fps=25):
     ball, players = m["ball"].copy(), m["players"].copy()
     n, k = players.shape[:2]
 
-    # Ball gaps where automatic tracking loses it: in the air, in crowds, at stoppages.
     d = np.linalg.norm(players - ball[:, None, :2], axis=2)
-    crowd = (d < 3.0).sum(axis=1) >= 3  # NaN compares False
+    crowd = (d < 3.0).sum(axis=1) >= 3
     aerial = np.nan_to_num(ball[:, 2]) > 1.5
     dead = m["label"] == D
     weight = np.exp(cfg["w_aerial"] * aerial + cfg["w_crowd"] * crowd + cfg["w_dead"] * dead)
@@ -245,7 +235,7 @@ def degrade(m, cfg, rng, fps=25):
 
     ball[:, :2] += rng.normal(0, cfg["noise_ball_m"], (n, 2))
     ball[lost, :2] = np.nan
-    ball[:, 2] = np.nan  # the ATD has no height
+    ball[:, 2] = np.nan
 
     players += rng.normal(0, cfg["noise_player_m"], players.shape).astype(np.float32)
     flat = np.ones(n)
@@ -253,7 +243,6 @@ def degrade(m, cfg, rng, fps=25):
         gone = _gaps(flat, cfg["player_missing"], cfg["player_gap_s"] * fps, rng)
         players[gone, j] = np.nan
 
-    # Duplicates: in bursts, a copy of one real player of that column's team, offset ~0.7 m.
     team = np.concatenate([m["team"], np.arange(N_DUP) % 2]).astype(np.int8)
     dup = np.full((n, N_DUP, 2), np.nan, np.float32)
     for j in range(N_DUP):
@@ -265,7 +254,6 @@ def degrade(m, cfg, rng, fps=25):
         dup[on, j] = players[np.flatnonzero(on), src[on]] + offset[on]
     players = np.concatenate([players, dup], axis=1)
 
-    # Phantom balls: short bursts where the detector reports a ball somewhere wrong on the pitch.
     if cfg["phantom_frac"] > 0:
         ghost = _gaps(flat, cfg["phantom_frac"], 0.5 * fps, rng)
         burst = np.cumsum(np.diff(np.concatenate(([0], ghost.astype(np.int8)))) == 1)
@@ -277,8 +265,6 @@ def degrade(m, cfg, rng, fps=25):
     return out
 
 
-# -- scoring -------------------------------------------------------------------------------------
-
 def score(gt, pred, period):
     """The official evaluate() on a bench match, with an X frame between halves so no possession
     can straddle halftime (valid_runs splits on GT X, exactly as on the challenge game)."""
@@ -288,13 +274,13 @@ def score(gt, pred, period):
     return pm.evaluate(gt, pred)
 
 
-COPIES = 2  # degraded copies per bench match
+COPIES = 2
 
 
 def degraded_features(mid):
     """[(sym, anti, degradation cfg)] for each degraded copy of a bench match, cached on disk.
     Seeds depend only on the match's place in the sorted bench and the copy number."""
-    from .features import features  # here, so bench stays importable without the feature code
+    from .features import features
     i = match_ids().index(mid)
     out = []
     for c in range(COPIES):
@@ -320,7 +306,6 @@ def quick_score(gt, pred, period):
 
 
 if __name__ == "__main__":
-    # Parse and cache every downloaded match, then print aggregate facts only.
     for mid in match_ids():
         m = load_match(mid)
         lab = m["label"]

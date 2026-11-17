@@ -20,15 +20,15 @@ def test_to_pitch_inverts_the_homography():
 
 def test_accept_keeps_supported_best_candidates_and_drops_paint_and_outsiders():
     frames = np.array([0, 0, 5, 10, 40, 60, 65])
-    xy = np.array([[30, 30], [80, 10], [31, 30], [32, 30],   # a moving ball, a weaker rival at 0
-                   [70, 30],                                 # isolated: no support
-                   [52.5, 34.2], [52.5, 34.0]])              # centre spot, twice
+    xy = np.array([[30, 30], [80, 10], [31, 30], [32, 30],
+                   [70, 30],
+                   [52.5, 34.2], [52.5, 34.0]])
     score = np.array([0.9, 0.4, 0.8, 0.7, 0.95, 0.9, 0.9])
     f, p = V.accept(frames, xy.astype(float), score, PITCH)
     assert f.tolist() == [0, 5, 10]
     np.testing.assert_allclose(p[0], [30, 30])
     f2, _ = V.accept(np.array([0, 5]), np.array([[30.0, 30], [200.0, 30]]), np.array([0.9, 0.9]), PITCH)
-    assert f2.size == 0  # the second is off the pitch, so the first loses its support
+    assert f2.size == 0
 
 
 def test_fill_only_gaps_and_only_short_plausible_joins_touching_a_detection():
@@ -37,10 +37,10 @@ def test_fill_only_gaps_and_only_short_plausible_joins_touching_a_detection():
     ball[30:] = [[50, 50]] * 10
     frames, xy = np.array([2, 7, 23]), np.array([[99.0, 99], [11.4, 10], [12.0, 10]])
     out, filled = V.fill(ball, frames, xy)
-    np.testing.assert_array_equal(out[:3], ball[:3])           # ATD frames untouched
-    np.testing.assert_allclose(out[5], [11.0, 10])             # line from ATD frame 2 to detection 7
-    assert filled[3:8].all() and not filled[8:23].any()        # 7 -> 23 is longer than 0.6 s
-    assert filled[23] and not filled[24:30].any()              # 23 -> 30: 54 m in 0.28 s, too fast
+    np.testing.assert_array_equal(out[:3], ball[:3])
+    np.testing.assert_allclose(out[5], [11.0, 10])
+    assert filled[3:8].all() and not filled[8:23].any()
+    assert filled[23] and not filled[24:30].any()
     assert not filled[:3].any() and not filled[30:].any()
 
 
@@ -54,5 +54,5 @@ def test_seen_runs_keeps_atd_ball_stretches_inside_segments():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
     from vision_segments import seen_runs
     missing = np.ones(40, bool)
-    missing[2:8] = missing[10:12] = missing[30:35] = False   # runs of 6, 2 (too short) and 5 frames
+    missing[2:8] = missing[10:12] = missing[30:35] = False
     assert seen_runs([(0, 20, 1), (28, 40, 2)], missing) == [(2, 8, 1), (30, 35, 2)]

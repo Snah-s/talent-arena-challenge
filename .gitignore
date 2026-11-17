@@ -67,3 +67,12 @@ docs/
 
 # -- external bench data (DFL, CC BY 4.0) and derived caches ---------------------------------
 external/
+
+# -- technical report: LaTeX source, d3 figure sources and the PDF deliverable --------------------
+!report/Build_Up_Viz.pdf
+report/figures/node_modules/
+report/*.aux
+report/*.fls
+report/*.fdb_latexmk
+report/*.log
+report/*.out

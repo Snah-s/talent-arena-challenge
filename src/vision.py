@@ -8,14 +8,12 @@ ground truth. The ATD ball is never overwritten: only frames where it is missing
 import numpy as np
 
 FPS = 25
-# No score cut here: src/ball_detect.py already keeps only WASB blobs above its own 0.5 threshold;
-# the score (the blob's heatmap sum, WASB's confidence) only ranks candidates within a frame.
-PITCH_MARGIN_M = 2.0   # a ball just over a line is still on camera
-SPOT_R = 1.0           # m: a candidate this close to the centre or a penalty spot is the paint
-PENALTY_SPOT_M = 11.0  # IFAB Law 1
-MAX_SPEED = 40.0       # m/s, above the hardest shots
-SUPPORT_S = 0.4        # a candidate needs another one within this time, at a reachable distance
-MAX_INTERP_S = 0.6     # longest stretch filled by joining two anchors with a line
+PITCH_MARGIN_M = 2.0
+SPOT_R = 1.0
+PENALTY_SPOT_M = 11.0
+MAX_SPEED = 40.0
+SUPPORT_S = 0.4
+MAX_INTERP_S = 0.6
 
 
 def to_pitch(frames, cx, cy, H, pitch):
@@ -39,7 +37,7 @@ def accept(frames, xy, score, pitch):
               & (xy[:, 1] > -PITCH_MARGIN_M) & (xy[:, 1] < W + PITCH_MARGIN_M))
     ok = inside & ~near_spot & np.isfinite(xy).all(1)
     f, p, s = frames[ok], xy[ok], score[ok]
-    order = np.lexsort((-s, f))                 # by frame, best score first
+    order = np.lexsort((-s, f))
     f, p = f[order], p[order]
     first = np.r_[True, f[1:] != f[:-1]]
     f, p = f[first], p[first]

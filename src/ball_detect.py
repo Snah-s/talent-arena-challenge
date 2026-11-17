@@ -41,13 +41,13 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-N_FRAMES = 199319                  # tactical video, DATA.md
-FRAMES_IN = 3                      # WASB model/wasb.yaml
-STEP = 1                           # WASB oversampling (paper s.3.3)
+N_FRAMES = 199319
+FRAMES_IN = 3
+STEP = 1
 INP_W, INP_H = 512, 288
-SCORE_THRESHOLD = 0.5              # WASB detector/tracknetv2.yaml
+SCORE_THRESHOLD = 0.5
 TOP_K = 5
-BATCH = 16                         # triplets per forward pass
+BATCH = 16
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 
@@ -106,7 +106,7 @@ def load_wasb(repo, weights, device):
     model = mod.HRNet(cfg)
     try:
         ckpt = torch.load(weights, map_location="cpu", weights_only=True)
-    except Exception:  # older checkpoints carry non-tensor objects; the file is the authors' own
+    except Exception:
         ckpt = torch.load(weights, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     return model.to(device).eval()
@@ -141,7 +141,7 @@ def run_batch(model, batch, device, vs):
     frame in it, the rows of all views together."""
     x = torch.from_numpy(np.stack([np.concatenate([f[v] for f in fr], 0)
                                    for _, fr in batch for v in range(len(vs))])).to(device)
-    hms = model(x)[0].sigmoid().float().cpu().numpy()     # (B * views, 3, H, W)
+    hms = model(x)[0].sigmoid().float().cpu().numpy()
     hms = hms.reshape(len(batch), len(vs), FRAMES_IN, *hms.shape[2:])
     return [(s + j, [r for v, (_, k, cx, cy) in enumerate(vs) for r in blobs(hms[b, v, j], k, cx, cy)])
             for b, (s, _) in enumerate(batch) for j in range(FRAMES_IN)]
@@ -179,7 +179,7 @@ def main():
     width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     vs = views(width, height, args.tiles)
     check_views(vs, width, height)
-    per_batch = max(1, BATCH // len(vs))   # network inputs per forward pass stay at BATCH
+    per_batch = max(1, BATCH // len(vs))
     print("{} view(s) of {} x {} px per frame, {} triplets per forward pass".format(
         len(vs), round(INP_W / vs[0][1]), round(INP_H / vs[0][1]), per_batch), flush=True)
     det_path = os.path.join(args.out, "detections.csv")

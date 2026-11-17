@@ -25,8 +25,8 @@ from src import vision as V  # noqa: E402
 from src.atd import load_atd  # noqa: E402
 from load_homography import load as load_homography  # noqa: E402  (starter/ on the path via src.atd)
 
-CHECK_MEDIAN_M = 5.0  # a correct pipeline puts detections next to the ATD ball, not metres away
-CHECK_MIN_N = 30      # fewer overlapping frames than this and the median says nothing: refuse
+CHECK_MEDIAN_M = 5.0
+CHECK_MIN_N = 30
 OUT = os.path.join(ROOT, "external", "vision", "ball_vision.npz")
 
 

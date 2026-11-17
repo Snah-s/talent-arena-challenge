@@ -3,7 +3,7 @@
     python scripts/nn_eval.py [--oof external/nn/out/oof_rnn.npz]
 
 r_nn comes out of fold from Colab (src/owner_nn.py; same held-out matches and degraded copies as
-the cached HGB heads of scripts/spell_eval.py). The two owner heads are combined in log-odds with
+the cached HGB heads of scripts/oof.py). The two owner heads are combined in log-odds with
 weight w on r_nn and decoded with the unchanged v6 HMM; w = 0 is v6. Adoption rule: higher mean
 spellF1 and higher on at least 5 of the 7 matches.
 """
@@ -17,7 +17,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from scripts.spell_eval import oof  # noqa: E402
+from scripts.oof import oof  # noqa: E402
 from src import bench  # noqa: E402
 from src import possession as P  # noqa: E402
 

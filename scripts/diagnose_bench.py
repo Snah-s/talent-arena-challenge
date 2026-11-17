@@ -64,12 +64,12 @@ def merged_across(cov0, cov1, len0, len1):
 
 def cuts(cfg):
     """E0: classify the true possession boundaries the decoder does not cut, at N = 2 s."""
-    from scripts.spell_eval import oof
+    from scripts.oof import oof
     pm = bench.pm
     mids = bench.match_ids()
     out = oof(mids, cfg)
     tot, miss = np.zeros((3, 3)), np.zeros((3, 3))
-    counts = np.zeros(5)  # n_gt, n_pred, unmatched@0.5, of which merged, of which fragmented
+    counts = np.zeros(5)
     n_runs = 0
     for mid in mids:
         m = bench.load_match(mid)
@@ -86,7 +86,7 @@ def cuts(cfg):
             merged = np.zeros(len(gs), bool)
             for i in range(len(gs) - 1):
                 (a0, b0, k0), (a1, b1, k1) = gs[i], gs[i + 1]
-                if np.any(gt[b0:a1] == bench.X):  # halftime
+                if np.any(gt[b0:a1] == bench.X):
                     continue
                 kind, gbin = boundary_kind(a1, b0, k0, k1)
                 hit = merged_across(covs[i], covs[i + 1], b0 - a0, b1 - a1)
@@ -140,7 +140,6 @@ def main(mode):
         heads, stats = train_on(inputs, train, train_lab, periods, cfg["stride"])
         truth = train_lab[held]
         q_true = np.where(truth != bench.D, 1.0, 0.0)
-        # owner truth on live frames; on dead frames the owner the dead states should remember
         live_owner = np.where(truth == bench.H, 1.0, np.where(truth == bench.A, 0.0, np.nan))
         r_true = F._bfill(F._ffill(live_owner))
         for c, (s, a) in enumerate(inputs[held]):

@@ -8,12 +8,11 @@ groups and nothing else, which is what makes the head's team symmetry exact (own
 
 import numpy as np
 
-STEP = 5             # 25 fps -> 5 fps
-DT = STEP / 25.0     # seconds per step
-M = 14               # players kept per team (duplicates and fragments push the ATD above 11)
+STEP = 5
+DT = STEP / 25.0
+M = 14
 CAP_S = 10.0
 TOK_F, BALL_F = 7, 6
-# feature columns negated by a mirror of the pitch along each axis (augmentation)
 TOK_X, TOK_Y = (0, 2, 4), (1, 3, 5)
 BALL_X, BALL_Y = (0, 4), (1, 5)
 
@@ -44,7 +43,7 @@ def build_inputs(players, team, ball, pitch):
     seen = np.isfinite(ball[:, 0])
     ref = ball.copy()
     if seen.any():
-        ref = _ffill(_ffill(ref[::-1])[::-1])  # before the first sighting: the first sighting
+        ref = _ffill(_ffill(ref[::-1])[::-1])
     ref[~np.isfinite(ref[:, 0])] = half
     last = np.maximum.accumulate(np.where(seen, np.arange(S), -10 ** 9))
     since = np.minimum((np.arange(S) - last) * DT, CAP_S) / CAP_S

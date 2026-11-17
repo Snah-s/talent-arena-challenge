@@ -11,37 +11,28 @@ import warnings
 import numpy as np
 
 FPS = 25
-CAP_S = 10.0  # cap for "seconds since/until the ball was seen"
+CAP_S = 10.0
 SYM = ("seen", "since_s", "until_s", "bspeed", "bspeed_r12", "out_last", "out_next",
        "center_last", "corner_last", "dmin", "dmin_r25", "n10", "pspeed", "pspeed_r25",
        "pspeed_r100", "pmax_r25", "ntrack", "own", "own_r25", "abs_terr", "abs_dd_last",
-       # Vidal-Codina 2022 set-piece configurations (IFAB Laws 8, 15, 16, 17), ball-free
        "touch_min", "touch_min_r25", "corner_min", "corner_min_r25", "center_min", "gk_cfg_r25",
-       # Vidal-Codina duel zone; Link & Hoernig 2017 ball moving with the player / touches
        "duel3", "vrel", "vrel_r12", "btouch", "btouch_r12")
 ANTI = ("dd", "dd_r12", "dd_r50", "dd_last", "dd_next", "n3", "terr", "cent", "cent_r50",
         "spread", "vdiff_r25",
-        # who takes the restart; who is near where the ball vanished / reappears (pitch-control
-        # flavour of Fernandez & Bornn 2018, distance only)
         "throw_team_r25", "corner_team_r25", "gk_team_r25", "ddl_now", "ddn_now",
-        # Fernandez & Bornn 2018 pitch control at the ball / where it was last / next seen
         "pc_ball", "pc_ball_r12", "pc_last", "pc_next")
-SYM = SYM + ("inf_last",)  # both teams' summed influence where the ball was last seen
-# Longer context (bench possessions last ~11 s on average; the windows above stop at +/-4 s):
-# centred +/-5 s and +/-10 s means, and past-only / future-only means whose gap marks a change.
+SYM = SYM + ("inf_last",)
 SYM = SYM + ("pspeed_r250", "seen_r125")
 ANTI = ANTI + ("dd_r125", "dd_r250", "dd_past125", "dd_fut125", "pc_last_r125", "pc_last_r250",
                "pc_past125", "pc_fut125", "cent_r250")
-# Vidal-Codina 2022 touches credited to a team: the last / next touch, and net touches in context
 SYM = SYM + ("ttouch_since", "ttouch_until")
 ANTI = ANTI + ("tteam_last", "tteam_next", "tteam_past125", "tteam_fut125", "tteam_r250")
-TOUCH_DV = 4.0  # m/s change of ball velocity that counts as a touch (fixed a priori)
-TOUCH_R = 2.0   # m from the nearest player
+TOUCH_DV = 4.0
+TOUCH_R = 2.0
 
-# IFAB pitch markings, metres
-GOAL_AREA = (5.5, 9.16)       # depth, half-width
+GOAL_AREA = (5.5, 9.16)
 PENALTY_AREA = (16.5, 20.16)
-MARK_TOL = 1.0                # tracking tolerance around a marking (Vidal-Codina's epsilons)
+MARK_TOL = 1.0
 
 
 def _roll(x, w, before=None, after=None):
@@ -94,8 +85,8 @@ def pitch_control(P, vp, home, z):
     with the distance to the target point. Returns (2 * PC_home - 1, summed influence of both
     teams): the first is antisymmetric in the teams, NaN where z or every player is missing.
     """
-    v = np.nan_to_num(vp)                                       # unknown velocity -> standing
-    rel = z[:, None, :] - P                                     # (T, K, 2)
+    v = np.nan_to_num(vp)
+    rel = z[:, None, :] - P
     dist = np.linalg.norm(rel, axis=2)
     radius = np.minimum(4 + dist ** 3 / (18 ** 3 / 6), 10)
     speed = np.linalg.norm(v, axis=2)
@@ -104,13 +95,13 @@ def pitch_control(P, vp, home, z):
     theta = np.arctan2(v[..., 1], v[..., 0])
     c, s = np.cos(theta), np.sin(theta)
 
-    def quad(delta):                                            # Mahalanobis^2 in player frame
+    def quad(delta):
         u = c * delta[..., 0] + s * delta[..., 1]
         w = -s * delta[..., 0] + c * delta[..., 1]
         return (u / sx) ** 2 + (w / sy) ** 2
 
     mu = P + v / 2
-    influence = np.exp(-0.5 * (quad(z[:, None, :] - mu) - quad(P - mu)))  # f(z) / f(player)
+    influence = np.exp(-0.5 * (quad(z[:, None, :] - mu) - quad(P - mu)))
     influence = np.where(np.isfinite(influence), influence, 0.0)
     ih, ia = (influence * home).sum(1), (influence * ~home).sum(1)
     known = np.isfinite(z[:, 0]) & np.isfinite(P[..., 0]).any(1)
@@ -146,7 +137,7 @@ def _features(m):
     sign = attack_sign(m)
     nan = np.float32(np.nan)
 
-    d = np.linalg.norm(P - B[:, None, :], axis=2)                       # (T, K)
+    d = np.linalg.norm(P - B[:, None, :], axis=2)
     dh = np.nanmin(np.where(home, d, nan), axis=1)
     da = np.nanmin(np.where(~home, d, nan), axis=1)
     dd = np.clip(dh - da, -30, 30)
@@ -161,9 +152,8 @@ def _features(m):
     bspeed = _speed(B, 2)
 
     v = _speed(P)
-    xs = (P[..., 0] - length / 2) * sign[:, None]                        # along home's attack
+    xs = (P[..., 0] - length / 2) * sign[:, None]
     tracked = np.isfinite(P[..., 0])
-    # at a kick-off players stand on the halfway line and the taker at the ball: allow 3 m
     own_h = (xs[:, home] < 3).sum(1) / np.maximum(tracked[:, home].sum(1), 1)
     own_a = (xs[:, ~home] > -3).sum(1) / np.maximum(tracked[:, ~home].sum(1), 1)
     own = np.minimum(own_h, own_a)
@@ -175,11 +165,10 @@ def _features(m):
     pspeed = np.nanmean(v, 1)
     dd_last = _ffill(dd)
 
-    # -- set-piece configurations, from players only --
-    side = np.where(home, 1.0, -1.0)                                        # team sign per column
+    side = np.where(home, 1.0, -1.0)
     x, y = P[..., 0], P[..., 1]
     inf = np.float32(np.inf)
-    touch = np.minimum(y, width - y)                                      # < 0 means beyond the line
+    touch = np.minimum(y, width - y)
     touch_min = np.nanmin(touch, axis=1)
     near_touch = np.where(np.isnan(touch), inf, touch).argmin(1)
     throw_team = np.where(touch_min < MARK_TOL, side[near_touch], 0.0)
@@ -188,17 +177,16 @@ def _features(m):
     near_corner = np.where(np.isnan(corner_d), inf, corner_d).argmin(1)
     corner_team = np.where(corner_min < 2 * MARK_TOL, side[near_corner], 0.0)
     center_min = np.nanmin(np.linalg.norm(P - centre, axis=2), axis=1)
-    goal_x = np.where(sign > 0, 0.0, length)[:, None]                    # home defends this end
+    goal_x = np.where(sign > 0, 0.0, length)[:, None]
     gk = []
     for defending, goal in ((home, goal_x), (~home, length - goal_x)):
         dx, dy = np.abs(x - goal), np.abs(y - width / 2)
         keeper = ((dx <= GOAL_AREA[0] + MARK_TOL) & (dy <= GOAL_AREA[1] + MARK_TOL) & defending).any(1)
         intruders = ((dx <= PENALTY_AREA[0]) & (dy <= PENALTY_AREA[1]) & ~defending).sum(1)
-        gk.append(keeper & (intruders == 0))                              # Law 16 goal-kick shape
+        gk.append(keeper & (intruders == 0))
     gk_cfg = (gk[0] | gk[1]).astype(np.float32)
     gk_team = gk[0].astype(np.float32) - gk[1].astype(np.float32)
 
-    # -- duel and control near the ball --
     duel3 = np.where(seen, np.minimum((d[:, home] < 3).sum(1), (d[:, ~home] < 3).sum(1)), np.nan)
     vp = np.full(P.shape, np.nan, np.float32)
     vp[3:-3] = (P[6:] - P[:-6]) / (6 / FPS)
@@ -208,15 +196,14 @@ def _features(m):
     vrel = np.linalg.norm(vb - vp[np.arange(len(vp)), nearest], axis=1)
     vrel = np.where(np.isfinite(dmin), vrel, np.nan)
     btouch = np.full(len(B), np.nan, np.float32)
-    btouch[3:-3] = np.linalg.norm(vb[6:] - vb[:-6], axis=1)               # change of ball velocity
+    btouch[3:-3] = np.linalg.norm(vb[6:] - vb[:-6], axis=1)
     touched = (btouch > TOUCH_DV) & (dmin < TOUCH_R)
-    tteam = np.where(touched, side[nearest], 0.0)                         # +1 home touch, -1 away
+    tteam = np.where(touched, side[nearest], 0.0)
     tk = np.where(touched, tteam, np.nan)
 
     pc_ball, _ = pitch_control(P, vp, home, B)
     pc_last, inf_last = pitch_control(P, vp, home, last)
 
-    # -- who is near where the ball was last seen / will be seen next, with current players --
     def team_gap(ref):
         dist = np.linalg.norm(P - ref[:, None, :], axis=2)
         return np.clip(np.nanmin(np.where(home, dist, nan), 1)

@@ -27,11 +27,11 @@ TAG_SYM = ("in_tag", "tag_dt")
 TAG_ANTI = ("tag_team",)
 
 PSEUDO_RANGES = {
-    "recall": (0.2, 0.9),             # share of real restarts that get a tag
-    "false_per_10min": (0.0, 2.0),    # tags placed in open play
-    "jitter_s": (0.0, 2.0),           # sd of the window centre around the restart
+    "recall": (0.2, 0.9),
+    "false_per_10min": (0.0, 2.0),
+    "jitter_s": (0.0, 2.0),
     "half_width_s": (1.0, 3.0),
-    "team_na": (0.2, 0.6),            # tag without a team (all throw-ins are N/A in Smart Tagging)
+    "team_na": (0.2, 0.6),
     "team_wrong": (0.0, 0.15),
 }
 

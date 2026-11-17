@@ -27,11 +27,11 @@ from src import possession as P  # noqa: E402
 from src import tagging  # noqa: E402
 
 COPIES = bench.COPIES
-STRIDE = 5          # training subsample; consecutive frames are near duplicates
+STRIDE = 5
 TRAIN_CONTROL_S = bench.CONTROL_S
 GRID = {"alpha": (0.2, 0.35, 0.5, 0.75),
-        "min_live": (50, 75, 100, 125, 150),  # frames: 2, 3, 4, 5, 6 s (grid 1 peaked at its 3 s edge)
-        "min_dead": (25, 50, 100)}         # frames: 1, 2, 4 s
+        "min_live": (50, 75, 100, 125, 150),
+        "min_dead": (25, 50, 100)}
 CONFIG_PATH = os.path.join(ROOT, "configs", "model.json")
 
 

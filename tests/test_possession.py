@@ -12,7 +12,7 @@ from src import possession as P  # noqa: E402
 def _score(path, logE, mins, logT, logStay):
     """Score of one path under the chain's rules: a run may only be left once it has lasted its
     minimum (the first run counts as already long), and only a long run pays the stay cost."""
-    score, k, first = logE[0, path[0]], 0, True  # k: position of frame t-1 within its run
+    score, k, first = logE[0, path[0]], 0, True
     for t in range(1, len(path)):
         long_enough = first or k >= mins[path[t - 1]] - 1
         if path[t] == path[t - 1]:
@@ -51,31 +51,6 @@ def test_viterbi_matches_enumeration():
         assert np.isclose(_score(path, logE, mins, logT, logStay), _brute(logE, mins, logT, logStay))
 
 
-def test_sampled_paths_follow_the_exact_posterior():
-    """FFBS draws against the posterior from enumerating every path under the same rules."""
-    rng = np.random.default_rng(4)
-    stats = _stats(rng)
-    logE = rng.normal(0, 1.0, (5, 4))
-    logE[2, :2] = -np.inf  # a forced-dead frame, as decode() makes them
-    arrays = P.chain(stats, {"min_live": 2, "min_dead": 2})
-    mins, logT, logStay = _rules(arrays)
-    paths = list(itertools.product(range(4), repeat=5))
-    w = np.exp([_score(p, logE, mins, logT, logStay) for p in paths])
-    exact = np.einsum("p,pts->ts", w / w.sum(), np.eye(4)[np.array(paths)])
-    draws = P.sample_paths(logE, *arrays, 20000, 0)
-    freq = np.stack([(draws == s).mean(0) for s in range(4)], 1)
-    np.testing.assert_allclose(freq, exact, atol=0.015)
-    assert P.sample_paths(logE, *arrays, 50, 7).tolist() == P.sample_paths(logE, *arrays, 50, 7).tolist()
-
-
-def test_mbr_prefers_the_consensus_and_keeps_viterbi_on_ties():
-    H, A = 0, 1
-    vit = np.array([H] * 40 + [A] * 40, np.int8)
-    odd = np.array([H] * 80, np.int8)
-    assert P.mbr(vit, np.stack([odd] + [vit] * 4), n_cand=1) is vit
-    assert P.mbr(vit, np.stack([odd] * 5), n_cand=1) is not vit
-
-
 def _stats(rng):
     return {"live_durs": rng.negative_binomial(3, 0.3, 500) + 1,
             "dead_durs": rng.negative_binomial(2, 0.4, 500) + 1,
@@ -105,7 +80,6 @@ def test_viterbi_matches_dense_viterbi():
         for t in range(1, 40):
             V = (V[:, None] + A).max(0) + logE[t, state_of]
         path = P.viterbi(logE, *arrays)
-        # score the returned state path by re-running the dense recursion restricted to it
         Vp = np.where(state_of == path[0], np.where(np.isin(np.arange(n), last), logE[0, state_of], -np.inf), -np.inf)
         for t in range(1, 40):
             Vp = np.where(state_of == path[t], (Vp[:, None] + A).max(0) + logE[t, state_of], -np.inf)
@@ -115,7 +89,7 @@ def test_viterbi_matches_dense_viterbi():
 def _toy_match(rng, n=3000, k=22):
     team = np.repeat([0, 1], k // 2).astype(np.int8)
     players = rng.uniform(5, 100, (n, k, 2)).astype(np.float32)
-    players[:, 0, 0], players[:, 11, 0] = 3, 102          # goalkeepers: home defends x = 0
+    players[:, 0, 0], players[:, 11, 0] = 3, 102
     ball = np.column_stack([rng.uniform(0, 105, (n, 2)), np.full(n, np.nan)]).astype(np.float32)
     ball[rng.random(n) < 0.4] = np.nan
     return {"players": players, "team": team, "ball": ball,
@@ -143,16 +117,15 @@ def test_owner_head_is_exactly_symmetric():
 
 
 def test_pitch_control_favours_the_team_at_the_point():
-    P = np.array([[[10.0, 10.0], [30.0, 30.0]]], np.float32)       # home at (10,10), away far
+    P = np.array([[[10.0, 10.0], [30.0, 30.0]]], np.float32)
     vp = np.zeros_like(P)
     home = np.array([True, False])
     pc, total = F.pitch_control(P, vp, home, np.array([[10.0, 10.0]]))
-    assert np.isclose(total[0], 1.0, atol=1e-3)                     # own spot: influence 1 ...
-    assert np.isclose(pc[0], 2 / (1 + np.exp(-1)) - 1, atol=1e-3)   # ... so logistic(1), as in the paper
+    assert np.isclose(total[0], 1.0, atol=1e-3)
+    assert np.isclose(pc[0], 2 / (1 + np.exp(-1)) - 1, atol=1e-3)
     pc_far, _ = F.pitch_control(P, vp, home, np.array([[30.0, 30.0]]))
-    assert np.isclose(pc_far[0], -pc[0], atol=1e-6)                  # mirror case
+    assert np.isclose(pc_far[0], -pc[0], atol=1e-6)
     assert np.isnan(F.pitch_control(P, vp, home, np.array([[np.nan, np.nan]]))[0][0])
-
 
 
 def test_blend_owner_keeps_team_symmetry_and_endpoints():

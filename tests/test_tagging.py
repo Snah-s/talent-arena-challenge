@@ -21,6 +21,6 @@ def test_pseudo_tags_mark_restarts_with_the_restarting_team():
 def test_tag_features():
     sym, anti = T.tag_features([(50, 150, 0), (300, 400, -1)], 500)
     assert sym[100, 0] == 1 and sym[200, 0] == 0
-    assert sym[100, 1] == 0.0 and sym[125, 1] == 1.0          # seconds from the nearest centre
-    assert np.isnan(T.tag_features([(0, 10, 0)], 1000)[0][900, 1])  # beyond CAP_S
+    assert sym[100, 1] == 0.0 and sym[125, 1] == 1.0
+    assert np.isnan(T.tag_features([(0, 10, 0)], 1000)[0][900, 1])
     assert anti[100, 0] == 1.0 and anti[350, 0] == 0.0 and anti[200, 0] == 0.0

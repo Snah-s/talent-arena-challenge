@@ -33,11 +33,11 @@ def test_parse_dfl_tiny(tmp_path, monkeypatch):
     monkeypatch.setattr(bench, "DFL_DIR", str(tmp_path))
 
     m = bench.parse_dfl("TEST")
-    assert m["team"].tolist() == [0, 1]                      # P1 home, P2 away, referee dropped
+    assert m["team"].tolist() == [0, 1]
     assert m["period"].tolist() == [1, 1, 1, 2]
-    assert m["label"].tolist() == [D, A, A, H]               # owner 0 on a live frame carries A
+    assert m["label"].tolist() == [D, A, A, H]
     assert int(m["unknown_owner"]) == 1
-    np.testing.assert_allclose(m["players"][0, 0], (0.0, 0.0))   # corner origin
+    np.testing.assert_allclose(m["players"][0, 0], (0.0, 0.0))
     np.testing.assert_allclose(m["players"][1, 1], (53.5, 36.0))
     assert np.isnan(m["players"][0, 1]).all() and np.isnan(m["players"][3]).all()
     np.testing.assert_allclose(m["ball"][1], (53.5, 35.0, 2.0))
@@ -65,11 +65,11 @@ def test_degrade_keeps_labels_and_drops_height():
     assert out["label"] is m["label"]
     assert np.isnan(out["ball"][:, 2]).all()
     assert abs(np.isnan(out["ball"][:, 0]).mean() - cfg["ball_missing"]) < 0.05
-    assert np.isfinite(m["ball"]).all()  # the input is not modified
+    assert np.isfinite(m["ball"]).all()
     assert out["players"].shape == (n, k + bench.N_DUP, 2)
     assert out["team"].tolist()[k:] == [0, 1]
     dup_on = np.isfinite(out["players"][:, k:, 0]).mean()
-    assert 0.01 < dup_on < 0.04  # 5 % of frames shared by the two columns, minus missing sources
+    assert 0.01 < dup_on < 0.04
 
 
 def test_score_splits_halves():
@@ -81,10 +81,10 @@ def test_score_splits_halves():
 
 def test_controlled_labels_apply_the_challenge_rule():
     s = lambda k, n: [k] * n  # noqa: E731
-    lab = np.array(s(H, 100) + s(A, 10) + s(H, 100)       # touch without control -> H
-                   + s(A, 60)                              # controlled switch -> A
-                   + s(H, 5) + s(D, 50)                    # deflection into touch -> A, then D
-                   + s(H, 5) + s(A, 100), np.int8)         # restart by H counts even if short
+    lab = np.array(s(H, 100) + s(A, 10) + s(H, 100)
+                   + s(A, 60)
+                   + s(H, 5) + s(D, 50)
+                   + s(H, 5) + s(A, 100), np.int8)
     period = np.ones(len(lab), np.int8)
     want = np.array(s(H, 210) + s(A, 65) + s(D, 50) + s(H, 5) + s(A, 100), np.int8)
     np.testing.assert_array_equal(bench.controlled_labels(lab, period, min_s=2.0), want)

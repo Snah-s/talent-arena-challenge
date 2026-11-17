@@ -1,0 +1,334 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+
+\setlist{itemsep=1pt,topsep=3pt}
+\emergencystretch=2em
+\captionsetup{font=small,labelfont=bf}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{Build Up Viz}\\[4pt]
+  \large Ball possession from automatic tracking\\[2pt]
+  \normalsize More than a Hack 2027, Phase 1: Ball Possession --- Technical document}
+\author{Camilo Soto Cristóbal \and Leonardo Huaman Casma \and Johar Barzola Estrella \and Efrain Córdova Amaya}
+\date{Team \textbf{Build Up Viz} \quad·\quad 17 November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We label every frame of the tactical video as home possession (\code{H}), away possession (\code{A}),
+dead ball (\code{D}) or no answer (\code{X}). Two gradient-boosted heads estimate whether the ball is
+alive and which team owns it, and a transformer-plus-LSTM owner head strengthens the second. A
+four-state hidden semi-Markov model with minimum durations turns the per-frame probabilities into
+whole possessions. Ball positions detected in the video fill part of the tracking's ball gaps.
+Everything that is trained or tuned uses the seven public Sportec Open DFL matches, degraded to look
+like automatic tracking; on the challenge game the model is only run. On the DFL bench, with each
+match held out in turn, the model reaches spellF1~0.655, against 0.182 for the organisers' baseline.
+The submitted version scores 0.671 on the public five-minute window (5--95\,\% bootstrap: 0.46--0.86).
+\end{abstract}
+
+\section{Approach}
+
+\paragraph{Diagnosis.} spellF1 treats each possession, a maximal run of \code{H} or \code{A}, as one
+object, matched by temporal IoU as in segmental F1 for action segmentation~\cite{lea2017tcn}. One
+flicker inside a possession splits it into three objects, and \code{X} is replaced by the previous
+label before scoring, so abstaining cannot help. The organisers' baseline predicts 131 possessions
+on the public window, where there are 17. It also marks \code{D} whenever the ball is missing, which
+happens on 41\,\% of the graded frames, mostly in live play. We concluded that the first gain comes
+from \emph{modelling possession as a sequence}, not from seeing the ball better. Four principles
+follow:
+\begin{enumerate}
+  \item separate \emph{is the ball alive?} from \emph{which team owns it?}, and join them in one
+    sequence model with minimum durations;
+  \item treat a missing ball as information: tracking loses it in aerial balls, crowds and
+    stoppages, so it is not missing at random~\cite{rubin1976};
+  \item train and tune only on external data, and only run the model on the challenge game;
+  \item make the model exactly symmetric in the two teams, so it cannot learn a home bias.
+\end{enumerate}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/pipeline.pdf}
+  \caption{Pipeline. Everything is trained and tuned on the external DFL bench (top); on the
+  challenge game it is only run (bottom). The video branch (purple) only fills frames where the
+  tracking has no ball.}
+  \label{fig:pipeline}
+\end{figure}
+
+\paragraph{Related work.} Rule-based detectors such as Vidal-Codina et al.~\cite{vidalcodina} assign possession and restarts from distances and player configurations, but
+assume a reliable ball. Ball Radar~\cite{ballradar}, TranSPORTmer~\cite{transportmer} and
+PathCRF~\cite{pathcrf} infer the ball or possession from the players alone, with set attention and
+recurrent or CRF layers. PathCRF uses the same DFL matches and reports 92.4\,\% owner accuracy on
+clean tracking. Our design borrows features from the first line and the architecture from the second.
+
+\paragraph{Per-frame features (71).} They use team membership only, never track identity, so the
+same code serves the bench and the challenge. Many are also averaged over centred windows of
+0.5--10\,s that ignore missing values.
+\begin{itemize}
+  \item \emph{37 symmetric} (unchanged when the teams are swapped): ball seen, time since and until
+    seen, ball speed, distance outside the pitch of the last and next seen ball, nearest-player
+    distance, players within 10\,m, duels, collective player speed (a dead-ball cue), touches (a
+    velocity change above 4\,m/s within 2\,m of a player), and restart configurations after
+    Vidal-Codina et al.: throw-in, corner, goal kick and kick-off.
+  \item \emph{34 antisymmetric} (change sign): nearest home minus nearest away distance to the
+    ball and to its last and next seen positions; territory; team speed; team of the last and next
+    touch; 5\,s past-versus-future contrasts, which locate changes; set-piece team; and pitch
+    control~\cite{fernandezBornn}, $2\sigma(I_\text{home}-I_\text{away})-1$, where each player's
+    influence is a normal distribution stretched along the direction of motion.
+\end{itemize}
+
+\paragraph{Gradient-boosted heads.} Two \code{HistGradientBoostingClassifier} models (200
+iterations, 31 leaves, L2 1), trained on every fifth frame of the degraded bench.
+$q = P(\text{alive})$ uses the symmetric block and the absolute antisymmetric block.
+$r = P(\text{home owns} \mid \text{alive})$ sees every live frame twice: as is with label $y$, and
+with the antisymmetric block negated with label $1-y$. Swapping the teams therefore swaps the
+prediction.
+
+\paragraph{Neural owner head} (Figure~\ref{fig:owner}). At 5\,fps, a ball token (6 features,
+including whether and when it was last seen) and up to 14 player tokens per team (7 features,
+nearest to the ball first) are embedded by an MLP ($d=64$) with a team embedding. One transformer
+layer (4 heads) attends over them. The ball token and each team's mean token feed a bidirectional
+LSTM over 10\,s windows. The output $\tfrac12[f(x)-f(\mathrm{swap}\,x)]$ is exactly antisymmetric.
+It was trained on the degraded bench only, on a Colab GPU: AdamW with one-cycle schedule, 15 epochs,
+random team swaps and pitch mirroring. Three seeds are averaged, and the result is blended with $r$
+in log-odds with weight $w = 0.75$, chosen out of fold. Every $w > 0$ won on all 7 matches.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\textwidth]{figures/owner_nn.pdf}
+  \caption{Neural owner head: attention over ball and player tokens per step, then a bidirectional
+  LSTM over 10\,s. The output is antisymmetric in the teams by construction.}
+  \label{fig:owner}
+\end{figure}
+
+\paragraph{Sequence model.} A four-state hidden semi-Markov model (Figure~\ref{fig:hmm}) has live
+states LH and LA, and dead states DH and DA, which remember the last owner and both emit \code{D}.
+Emissions are the heads' scaled likelihoods, tempered by $\alpha$ because consecutive frames are
+correlated, with $\pi$ the bench share of live frames:
+\[
+  e(\mathrm{LH}) = \alpha\Big[\log\tfrac{q}{\pi} + \log 2r'\Big],\quad
+  e(\mathrm{LA}) = \alpha\Big[\log\tfrac{q}{\pi} + \log 2(1-r')\Big],\quad
+  e(\mathrm{D\cdot}) = \alpha \log\tfrac{1-q}{1-\pi}.
+\]
+Each state is expanded into $m-1$ forced sub-states plus a geometric tail matching the bench mean
+duration, the explicit-duration construction of~\cite{yu2010hsmm}. Transitions come from the bench
+labels: a live state either switches team directly or goes dead, and a dead state restarts with
+either team; everything else is forbidden. Viterbi~\cite{rabiner} decodes each half. A 60-point grid
+with one match held out chose $\alpha = 0.75$, live $\geq 3$\,s and dead $\geq 4$\,s.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.68\textwidth]{figures/hmm.pdf}
+  \caption{Four-state HSMM with minimum durations. A direct change of team is a live-to-live
+  transition; after a dead ball, either team may restart.}
+  \label{fig:hmm}
+\end{figure}
+
+\paragraph{Smart Tagging.} Only \code{SET PIECES} windows are used, because a restart ends a dead
+ball, the evidence tracking lacks most. They give three features: inside a window, signed time to its
+centre, and its team when known. Each half's first \code{Kick Off (Start)} forces \code{D} before
+it. Phase codes describe tactics, have no bench analogue, and are left out.
+
+\paragraph{Ball fill from video.} WASB~\cite{wasb} runs inference only, with its public soccer
+weights, inside the tracking's ball gaps of at least 1\,s plus 1\,s margins. At its $512\times288$
+input the ball is about 1\,px, so each frame is cut into $2\times2$ overlapping $1024\times576$
+tiles, as in SAHI~\cite{sahi}, making the ball about 1.9 times larger. Candidates are projected with
+the homography and filtered by fixed rules: inside the pitch plus 2\,m, not within 1\,m of the
+painted centre and penalty marks (Law~1~\cite{ifab}), the best one per frame, and supported by
+another candidate within 0.4\,s at 40\,m/s or less. Gaps of up to 0.6\,s are joined linearly; the
+tracking's ball is never overwritten. An automatic check fixed beforehand refuses the fusion if the
+median distance to the tracking's ball, where both exist, exceeds 5\,m. It passed: $n = 3036$, median
+1.15\,m. The ball becomes known on 66.3\,\% of graded frames instead of 59.3\,\%.
+
+\section{Evaluation and results}
+
+\paragraph{Protocol.} Each match is held out in turn and scored on two degraded copies, averaging
+over control thresholds of 1, 2 and 3\,s (Section~\ref{sec:rules}). With seven folds, a mean has wide
+error bars~\cite{varoquaux2018} and paired resampled tests are unreliable~\cite{dietterich}, so a
+change is adopted only if it raises the mean \emph{and} wins on at least 5 of 7 matches.
+
+\begin{table}[h]
+  \centering\small
+  \begin{tabular}{llcc}
+    \toprule
+    Version & Change & spellF1 & macroF1 \\
+    \midrule
+    \code{baseline\_smooth50} & organisers' baseline & 0.182 & 0.484 \\
+    v1 & heads + HSMM & 0.544 & --- \\
+    v6 & features, pseudo-tags, decoder grid & 0.605 & 0.876 \\
+    v7 & + neural owner head (7/7 matches better) & \textbf{0.655} & \textbf{0.888} \\
+    v8 (submitted) & + video ball fill & 0.671$^{*}$ & 0.891$^{*}$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Bench results, one match held out at a time. $^{*}$The bench has no video, so v8 is
+  scored only on the public five-minute window, where v7 scores 0.650 and 0.866 (Section~2).}
+  \label{tab:bench}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\textwidth]{figures/results.pdf}
+  \caption{Left: bench spellF1 by version, against v6 with a perfect owner. Right: the public window,
+  with 17 possessions, where the versions are indistinguishable.}
+  \label{fig:results}
+\end{figure}
+
+\paragraph{Diagnostics.} Training with real pseudo-tags gave 0.590, against 0.528 without tags and
+0.529 with the same tags shifted off the restarts, so the gain is the tags' information. Replacing
+one part of v6 with the truth gives $+0.20$ for a perfect owner, $+0.07$ for a perfect ball (the
+ceiling of vision) and $+0.05$ for a perfect alive/dead signal. The owner error lies mostly in the
+cuts: the model predicts 345 possessions per match against 390, and 98\,\% of the merged ones are
+direct home-to-away changes. Across matches, the share of missing ball predicts the score best
+(correlation $-0.83$).
+
+\paragraph{Public window.} It set no parameter. Scores, with 5--95\,\% bootstrap intervals: v6 0.645
+(0.44--0.83), v7 0.650 (0.45--0.84), v8 0.671 (0.46--0.86). These differences are noise. v8 is
+submitted because its fusion passed the check that the plan set, before the video run, as the
+condition for using it. We disclose that all three had been scored on the window before the choice.
+
+\section{Assets used and dropped}
+
+\begin{table}[h]
+  \centering\small
+  \begin{tabularx}{\textwidth}{lX}
+    \toprule
+    Asset & Use \\
+    \midrule
+    Challenge tracking, Smart Tagging, homography, video & model inputs only; nothing is fitted on them \\
+    Sportec Open DFL, 7 matches~\cite{dfl} & all training and tuning \\
+    WASB code (MIT) and public soccer weights~\cite{wasb} & inference only, on Google Colab (T4 GPU) \\
+    PyTorch, scikit-learn, numba & modelling \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\noindent\textbf{Tried and dropped} (bench, adoption rule): relabelling whole possessions in a second
+stage ($+0.002$, 5/7); a change head lowering the transition cost (average precision 0.09, $+0.0007$);
+minimum-Bayes-risk decoding for spellF1 ($+0.0007$, 4/7); a Kalman ball fill ($-0.001$); a
+camera-focus prior and kick-off detection from tracking (false positives); and WASB on full frames,
+refused by the check (median 10.8\,m). \textbf{Not used:} SoccerNet and models trained on it (NDA
+licence); event data (no continuous ball, another possession definition); self-supervised video
+features (no video on the bench). \textbf{Prepared, not run:} a data-quality-aware decoder and owner
+heads with an auxiliary change loss.
+
+\section{Training data}
+\label{sec:data}
+
+The only labelled data is \textbf{Sportec Open DFL}~\cite{dfl} (figshare 28196177, CC~BY~4.0): 7
+Bundesliga matches, TRACAB tracking at 25\,Hz, 1.0\,M frames in the halves, with per-frame
+\code{BallStatus} and \code{BallPossession} flags from the official DFL position data (Sportec
+Solutions). \textbf{None of it comes from the challenge game.} Labels are \code{D} where the ball is
+dead and the owning team otherwise, then rewritten with the rule of Section~\ref{sec:rules}.
+
+DFL tracking is corrected by hand, so each match is copied twice and degraded, with ranges fixed a
+priori and never measured on the challenge tracking. The ball is removed on 20--60\,\% of frames in
+gaps of 0.5--4\,s. Following~\cite{rubin1976}, gaps start more often when the ball is above 1.5\,m,
+crowded (3 or more players within 3\,m) or dead. Players go missing on 2--15\,\% of frames; 5--50\,cm
+noise, duplicate players and phantom balls are added. Smart Tagging is simulated from the DFL
+restarts with 20--90\,\% recall, up to 2 false alarms per 10 minutes, up to 2\,s jitter and 20--60\,\%
+unknown teams.
+
+The neural owner head is trained on this data only. The WASB weights were trained by their authors on
+ISSIA-CNR, offered for non-commercial research only; the weights declare no licence of their own and
+we use them for inference only. We flag this as a licensing risk.
+
+\section{Possession rules implemented}
+\label{sec:rules}
+
+The rules follow the challenge's definitions and Laws~8 and~9 of the Laws of the Game~\cite{ifab}.
+\begin{description}[leftmargin=1.2em,itemsep=1pt]
+  \item[Change of possession.] DFL gives the ball to whoever touches it; the challenge counts only
+    \emph{controlled} possession. A live switch counts if the new team keeps the ball for at least
+    2\,s, fixed a priori from ``a player keeps the ball for a few seconds''.
+  \item[Loose balls, touches, deflections, lost aerial duels.] A switch shorter than 2\,s goes back
+    to the team that had the ball.
+  \item[Restarts.] After a dead ball the restarting team has possession immediately; set-piece tags
+    and configurations say who restarts. Each half is dead until its kick-off window.
+  \item[Durations.] Dead stretches last at least 4\,s and live possessions at least 3\,s.
+  \item[Abstention.] \code{X} only outside the two halves, never on a frame that could be graded.
+\end{description}
+
+\section{Limitations and future work}
+
+\begin{itemize}
+  \item \textbf{Long ball gaps.} The challenge tracking loses the ball for a median of about 10\,s and
+    up to 221\,s, against 0.5--4\,s on the bench. Recalibrating would mean calibrating on the
+    challenge data, so the bench probably overestimates our score. The video fills only 17\,\% of
+    the gap frames.
+  \item \textbf{Merged possessions.} Quick home-to-away exchanges are the main remaining error.
+  \item \textbf{Annotator criterion.} DFL's flag and Metrica's annotators may disagree on duels and
+    loose balls; the 2\,s rule is a proxy.
+  \item \textbf{Tracking geometry.} 2.1\,\% of seen balls lie more than 2\,m outside the pitch, never
+    seen on the bench.
+  \item \textbf{Vision.} 27\,\% of accepted detections lie more than 3\,m from the tracked ball where
+    both exist. The tiling was decided after the full-frame pass failed the check: a declared
+    deviation, a single attempt with no values swept. The video was processed on Google Colab from
+    the organisers' shared folder with no AI assistant enabled, which we flag as a risk. GPU
+    inference may differ slightly across GPU models, hence the intermediate detection file.
+  \item \textbf{Future work.} An owner head trained with a change-aware loss, a touch head trained on
+    DFL events, and temporal tracking of ball candidates.
+\end{itemize}
+
+\section{Reproduction}
+
+Install Python 3.11 with \code{requirements-solution.txt}, put the challenge data in \code{data/},
+download the DFL bench with the MD5-checked command in the README, and run:
+\begin{verbatim}
+python scripts/vision_fuse.py
+python scripts/make_submission.py --team Build_Up_Viz \
+       --ball-fill external/vision/ball_vision.npz
+\end{verbatim}
+The WASB detections are an intermediate file. We provide them on request, and the notebook
+\code{notebooks/vision\_ball.ipynb} regenerates them. The pipeline is deterministic: a clean clone with empty caches
+reproduces \code{Build\_Up\_Viz.csv} byte for byte in about 10 minutes on a CPU. Without
+\code{--ball-fill} it needs only the challenge data and the DFL bench, and gives v7. Twenty-four unit
+tests cover the label rule, the degradation, the team symmetry and the Viterbi decoder.
+
+\begin{thebibliography}{15}\small
+  \setlength{\itemsep}{0pt}
+  \bibitem{dfl} M.~Bassek, R.~Rein, H.~Weber and D.~Memmert. An integrated dataset of spatiotemporal
+    and event data in elite soccer. \emph{Scientific Data} 12:195, 2025.
+  \bibitem{lea2017tcn} C.~Lea, M.~D.~Flynn, R.~Vidal, A.~Reiter and G.~D.~Hager. Temporal
+    convolutional networks for action segmentation and detection. \emph{CVPR}, 2017.
+  \bibitem{rubin1976} D.~B.~Rubin. Inference and missing data. \emph{Biometrika} 63(3):581--592, 1976.
+  \bibitem{vidalcodina} F.~Vidal-Codina, N.~Evans, B.~El~Fakir and J.~Billingham. Automatic event
+    detection in football using tracking data. \emph{Sports Engineering} 25:18, 2022.
+  \bibitem{ballradar} H.~Kim, H.-J.~Choi, C.~J.~Kim, J.~Yoon and S.-K.~Ko. Ball trajectory inference
+    from multi-agent sports contexts using Set Transformer and hierarchical Bi-LSTM. \emph{KDD}, 2023.
+  \bibitem{transportmer} G.~Capellera, L.~Ferraz, A.~Rubio, A.~Agudo and F.~Moreno-Noguer.
+    TranSPORTmer: A holistic approach to trajectory understanding in multi-agent sports. \emph{ACCV},
+    2024.
+  \bibitem{pathcrf} H.~Kim, K.~Lee, S.~Seo, S.-K.~Ko, J.~Yoon and C.~Park. PathCRF: Ball-free soccer
+    event detection via possession path inference from player trajectories. \emph{KDD}, 2026.
+  \bibitem{fernandezBornn} J.~Fernández and L.~Bornn. Wide Open Spaces: A statistical technique for
+    measuring space creation in professional soccer. \emph{MIT Sloan SSAC}, 2018.
+  \bibitem{yu2010hsmm} S.-Z.~Yu. Hidden semi-Markov models. \emph{Artificial Intelligence}
+    174:215--243, 2010.
+  \bibitem{rabiner} L.~R.~Rabiner. A tutorial on hidden Markov models and selected applications in
+    speech recognition. \emph{Proceedings of the IEEE} 77(2):257--286, 1989.
+  \bibitem{wasb} S.~Tarashima, M.~A.~Haq, Y.~Wang and N.~Tagawa. Widely applicable strong baseline for sports ball detection and
+    tracking. \emph{BMVC}, 2023.
+  \bibitem{sahi} F.~C.~Akyon, S.~O.~Altinuc and A.~Temizel. Slicing aided hyper inference and
+    fine-tuning for small object detection. \emph{ICIP}, 2022.
+  \bibitem{ifab} The International Football Association Board. \emph{Laws of the Game 2026/27}.
+  \bibitem{varoquaux2018} G.~Varoquaux. Cross-validation failure: Small sample sizes lead to large
+    error bars. \emph{NeuroImage} 180:68--77, 2018.
+  \bibitem{dietterich} T.~G.~Dietterich. Approximate statistical tests for comparing supervised
+    classification learning algorithms. \emph{Neural Computation} 10(7):1895--1923, 1998.
+\end{thebibliography}
+
+\end{document}
